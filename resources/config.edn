@@ -1,0 +1,10 @@
+{:bots
+ {:botnames
+  {:Fulir
+   {:token "MTMwOTk5MjU5MjQ1NjI5MDQwNg.GFqYq3.ouGAClvmfdVvQOVK2ch2QOAeBVC90-cjNdSEB0"
+    :status "offline"
+    :jda nil
+    :guilds {}}}}
+ :flows
+ {:registry {}         ;; Registered flows
+  :instances {}}}      ;; Active flow instances

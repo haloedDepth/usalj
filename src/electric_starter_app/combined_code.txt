@@ -1,0 +1,3066 @@
+Combined Code Files from /home/dami/electric-v2-starter-app/src/electric_starter_app/bot
+Generated on Sat Dec  7 17:39:51 UTC 2024
+==========================================================
+
+
+
+
+===========================================================
+FILE: platform/discord/schema/definition/trigger.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.schema.definition.trigger
+  (:require [clojure.tools.logging :as log]))
+
+(def command-option-schema
+  {:name {:type :string
+          :required true
+          :doc "Name of the option"}
+   :description {:type :string
+                 :required true
+                 :doc "Description of the option"}
+   :type {:type :keyword
+          :required true
+          :doc "Type of the option: string, integer, boolean, user, channel, role"}
+   :required {:type :boolean
+              :required true
+              :doc "Whether this option is required"}})
+
+;; REPLACED: Old trigger-schema with new slash-command focused schema
+(def trigger-schema
+  {:name {:type :keyword
+          :required true
+          :doc "Unique identifier for the trigger"}
+   :command-name {:type :string
+                  :required true
+                  :doc "Slash command name (what users will type after /)"}
+   :description {:type :string
+                 :required true
+                 :doc "Description of the command - shown in Discord UI"}
+   :options {:type :vector
+             :required false
+             :validation #(every? (fn [opt] (every? (fn [[k v]]
+                                                      (contains? command-option-schema k))
+                                              opt))
+                            %)
+             :doc "Vector of command options following Discord's slash command structure"}
+   :flow-id {:type :keyword
+             :required true
+             :doc "ID of flow to trigger"}})
+
+(def valid-option-types
+  #{:string :integer :boolean :user :channel :role})
+
+(defn create-trigger
+  "Creates a new validated trigger definition for slash commands"
+  [{:keys [name command-name description options flow-id] :as trigger-def}]
+  (log/debug "Creating slash command trigger definition"
+    {:name name :command-name command-name :flow-id flow-id})
+
+  (when-not (re-matches #"^[\w-]{1,32}$" command-name)
+    (throw (ex-info "Invalid command name format. Must be 1-32 characters, alphanumeric or dash"
+             {:command-name command-name})))
+
+  (when-not (string? description)
+    (throw (ex-info "Description must be a string"
+             {:description description})))
+
+  (when (> (count description) 100)
+    (throw (ex-info "Description must be 100 characters or less"
+             {:description description})))
+
+  (when options
+    (doseq [option options]
+      (when-not (every? #(contains? command-option-schema (first %)) option)
+        (throw (ex-info "Invalid option format"
+                 {:option option
+                  :valid-keys (keys command-option-schema)})))))
+
+  trigger-def)
+
+
+===========================================================
+FILE: platform/discord/schema/definition/interaction.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.schema.definition.interaction
+  (:require [electric-starter-app.bot.platform.discord.transformers :as dt])
+  (:import [net.dv8tion.jda.api.events.guild GuildJoinEvent GuildLeaveEvent
+            GuildReadyEvent GuildUnavailableEvent GuildAvailableEvent]
+           [net.dv8tion.jda.api.events.channel ChannelCreateEvent
+            ChannelDeleteEvent]
+           [net.dv8tion.jda.api.events.message MessageReceivedEvent
+            MessageUpdateEvent MessageDeleteEvent MessageBulkDeleteEvent]
+           [net.dv8tion.jda.api.events.message.react MessageReactionAddEvent
+            MessageReactionRemoveEvent]
+           [net.dv8tion.jda.api.events.interaction.command SlashCommandInteractionEvent]))
+
+(def interaction-schemas
+  {;; Guild Events
+   :guild-join
+   {:event-class GuildJoinEvent
+    :fields {:interaction-type {:value :guild-join :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :guild-data {:type :map :required true :transform #(dt/guild->map (.getGuild %))}}}
+
+   :guild-leave
+   {:event-class GuildLeaveEvent
+    :fields {:interaction-type {:value :guild-leave :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}}}
+
+   :guild-ready
+   {:event-class GuildReadyEvent
+    :fields {:interaction-type {:value :guild-ready :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :guild-data {:type :map :required true :transform #(dt/guild->map (.getGuild %))}}}
+
+   :guild-unavailable
+   {:event-class GuildUnavailableEvent
+    :fields {:interaction-type {:value :guild-unavailable :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}}}
+
+   :guild-available
+   {:event-class GuildAvailableEvent
+    :fields {:interaction-type {:value :guild-available :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :guild-data {:type :map :required true :transform #(dt/guild->map (.getGuild %))}}}
+
+   ;; Channel Events
+   :channel-create
+   {:event-class ChannelCreateEvent
+    :fields {:interaction-type {:value :channel-create :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :channel-data {:type :map :required true :transform #(dt/channel->map (.getChannel %))}}}
+
+   :channel-delete
+   {:event-class ChannelDeleteEvent
+    :fields {:interaction-type {:value :channel-delete :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}}}
+
+   ;; Message Events
+   :message-received
+   {:event-class MessageReceivedEvent
+    :fields {:interaction-type {:value :message-received :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :message-data {:type :map :required true :transform #(dt/message->map (.getMessage %))}}}
+
+   :message-update
+   {:event-class MessageUpdateEvent
+    :fields {:interaction-type {:value :message-update :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :message-data {:type :map :required true :transform #(dt/message->map (.getMessage %))}}}
+
+   :message-delete
+   {:event-class MessageDeleteEvent
+    :fields {:interaction-type {:value :message-delete :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :message-id {:type :string :required true :transform #(.getMessageId %)}}}
+
+   :message-bulk-delete
+   {:event-class MessageBulkDeleteEvent
+    :fields {:interaction-type {:value :message-bulk-delete :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :message-ids {:type :vector :required true :transform #(vec (.getMessageIds %))}}}
+
+;; Reaction Events
+   :reaction-add
+   {:event-class MessageReactionAddEvent
+    :fields {:interaction-type {:value :reaction-add :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :message-id {:type :string :required true :transform #(.getMessageId %)}
+             :user-id {:type :string :required true :transform #(.getUserId %)}
+             :message-author-id {:type :string :required true :transform #(.getMessageAuthorId %)}
+             :reaction {:type :map :required true
+                        :transform #(hash-map :emoji-name (.getName (.getEmoji (.getReaction %)))
+                                      :formatted (.getFormatted (.getEmoji (.getReaction %))))}}}
+
+   :reaction-remove
+   {:event-class MessageReactionRemoveEvent
+    :fields {:interaction-type {:value :reaction-remove :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :message-id {:type :string :required true :transform #(.getMessageId %)}
+             :user-id {:type :string :required true :transform #(.getUserId %)}
+             :reaction {:type :map :required true
+                        :transform #(hash-map :emoji-name (.getName (.getEmoji (.getReaction %)))
+                                      :formatted (.getFormatted (.getEmoji (.getReaction %))))}}}
+
+   ;; Slash Command Events
+   :slash-command
+   {:event-class SlashCommandInteractionEvent
+    :fields {:interaction-type {:value :slash-command :required true}
+             :bot-name {:type :string :required true}
+             :guild-id {:type :string :required true :transform #(.getId (.getGuild %))}
+             :channel-id {:type :string :required true :transform #(.getId (.getChannel %))}
+             :command-name {:type :string :required true :transform #(.getName %)}
+             :options {:type :map :required false
+                       :transform (fn [event]
+                                    (when-let [options (.getOptions event)]
+                                      (reduce (fn [m opt] (assoc m (keyword (.getName opt)) (.getAsString opt))) {} options)))}
+             :member {:type :map :required false :transform #(when-let [member (.getMember %)] (dt/member->map member))}
+             :deferred? {:type :boolean :required true :transform #(.isAcknowledged %)}
+             :interaction-id {:type :string :required true :transform #(.getId %)}}}})
+
+(defn get-schema-for-event
+  "Returns the schema definition for a given JDA event class.
+   Returns nil if no schema is found."
+  [event]
+  (->> interaction-schemas
+    (filter (fn [[_ schema]] (instance? (:event-class schema) event)))
+    first
+    second))
+
+===========================================================
+FILE: platform/discord/schema/validation/trigger.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.schema.validation.trigger
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.impl.triggers :as triggers]
+            [electric-starter-app.bot.platform.discord.schema.definition.trigger :refer [valid-option-types command-option-schema]]))
+
+(defn validate-option-type
+  "Validates that an option type is supported by Discord"
+  [type]
+  (when-not (valid-option-types type)
+    (throw (ex-info "Invalid option type"
+             {:type type
+              :valid-types valid-option-types}))))
+
+(defn create-command-option
+  "Creates a validated command option map"
+  [{:keys [name description type required] :as option}]
+  (validate-option-type type)
+  (when-not (string? name)
+    (throw (ex-info "Option name must be a string"
+             {:option option})))
+  (when-not (string? description)
+    (throw (ex-info "Option description must be a string"
+             {:option option})))
+  (when (> (count description) 100)
+    (throw (ex-info "Option description must be 100 characters or less"
+             {:option option
+              :description description})))
+  {:name name
+   :description description
+   :type type
+   :required (boolean required)})
+
+;; MODIFIED: Updated to handle slash command structure
+(defn create-trigger
+  "Creates a new validated trigger definition for slash commands"
+  [{:keys [name command-name description options flow-id] :as trigger-def}]
+  (log/debug "Creating slash command trigger definition"
+    {:name name :command-name command-name :flow-id flow-id})
+
+  (when-not (re-matches #"^[\w-]{1,32}$" command-name)
+    (throw (ex-info "Invalid command name format. Must be 1-32 characters, alphanumeric or dash"
+             {:command-name command-name})))
+
+  (when-not (string? description)
+    (throw (ex-info "Description must be a string"
+             {:description description})))
+
+  (when (> (count description) 100)
+    (throw (ex-info "Description must be 100 characters or less"
+             {:description description})))
+
+  (when options
+    (doseq [option options]
+      (when-not (every? #(contains? command-option-schema (first %)) option)
+        (throw (ex-info "Invalid option format"
+                 {:option option
+                  :valid-keys (keys command-option-schema)})))))
+
+  trigger-def)
+
+;; NEW: Function to convert trigger to Discord command data
+(defn trigger->command-data
+  "Converts a trigger definition to Discord command creation data"
+  [{:keys [command-name description options]}]
+  {:name command-name
+   :description description
+   :options (when options
+              (mapv (fn [{:keys [name description type required]}]
+                      {:name name
+                       :description description
+                       :type type
+                       :required required})
+                options))})
+
+(defn extract-trigger-data
+  "Extracts trigger data from slash command options"
+  [command-name options trigger-def]
+  (log/debug "Extracting trigger data from slash command"
+    {:command command-name :options options})
+
+  ;; For slash commands, we create an arguments map directly from the options
+  (let [args (when options
+               (reduce-kv
+                 (fn [m k v]
+                   (assoc m (keyword k) v))
+                 {}
+                 options))]
+
+    {:arguments args
+     :trigger-name (:name trigger-def)
+     :flow-id (:flow-id trigger-def)}))
+
+(defn matches-trigger?
+  "Checks if an interaction matches any registered commands.
+   Returns [flow-id trigger-data] if matched, nil otherwise."
+  [interaction]
+  (when (= :slash-command (:interaction-type interaction))
+    (let [command-name (:command-name interaction)
+          options (:options interaction)]
+
+      (log/debug "Checking slash command against triggers"
+        {:command command-name})
+
+      (when-let [trigger-def (get triggers/trigger-registry command-name)]
+        (log/debug "Found matching command trigger"
+          {:command command-name
+           :trigger-name (:name trigger-def)})
+
+        (when-let [trigger-data (extract-trigger-data
+                                  command-name
+                                  options
+                                  trigger-def)]
+          [(:flow-id trigger-def) trigger-data])))))
+
+
+
+===========================================================
+FILE: platform/discord/schema/validation/interaction.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.schema.validation.interaction
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.platform.discord.schema.definition.interaction :as schema.interactions]))
+
+(defn validate-interaction-type
+  "Validates that an interaction type exists in the schema.
+   Throws detailed exception for invalid types."
+  [interaction-type]
+  (log/debug "Validating interaction type" {:type interaction-type})
+  (when (and interaction-type
+          (not (contains? schema.interactions/interaction-schemas interaction-type)))
+    (throw (ex-info "Invalid interaction type"
+             {:type interaction-type
+              :valid-types (keys schema.interactions/interaction-schemas)}))))
+
+(defn validate-interaction-fields
+  "Validates that an interaction map matches its schema definition.
+   Checks required fields and field types."
+  [interaction-type interaction-map]
+  (log/debug "Validating interaction fields"
+    {:type interaction-type :fields (keys interaction-map)})
+  (when (and interaction-type interaction-map)
+    (let [schema-def (get schema.interactions/interaction-schemas interaction-type)
+          required-fields (->> schema-def
+                            :fields
+                            (filter (fn [[_ v]] (:required v)))
+                            (map first)
+                            set)]
+      (doseq [field required-fields]
+        (when-not (contains? interaction-map field)
+          (throw (ex-info "Missing required interaction field"
+                   {:interaction-type interaction-type
+                    :missing-field field
+                    :required-fields required-fields})))))))
+
+(defn validate-interaction
+  "Validates a complete interaction against its schema definition.
+   Checks both type and required fields."
+  [interaction]
+  (log/debug "Validating interaction"
+    {:type (:interaction-type interaction)})
+  (when interaction
+    (validate-interaction-type (:interaction-type interaction))
+    (validate-interaction-fields (:interaction-type interaction) interaction)
+    interaction))
+
+===========================================================
+FILE: platform/discord/transformers.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.transformers
+  (:require [electric-starter-app.bot.core.schema.definition.expression :as expressions])
+  (:import [net.dv8tion.jda.api.entities User Member Role Message Guild]
+           [net.dv8tion.jda.api.entities.channel Channel]
+           [net.dv8tion.jda.api.interactions.commands OptionType]))
+
+(defn user->map
+  [^User user]
+  (when user
+    {:id (expressions/value-expr (.getId user))
+     :name (expressions/value-expr (.getName user))
+     :discriminator (expressions/value-expr (.getDiscriminator user))
+     :bot? (expressions/value-expr (.isBot user))
+     :avatar-url (expressions/value-expr (.getEffectiveAvatarUrl user))
+     :global-name (expressions/value-expr (.getGlobalName user))}))
+
+(defn role->map
+  [^Role role]
+  (when role
+    {:id (expressions/value-expr (.getId role))
+     :name (expressions/value-expr (.getName role))
+     :color (expressions/value-expr (str (.getColor role)))
+     :position (expressions/value-expr (.getPosition role))
+     :managed? (expressions/value-expr (.isManaged role))
+     :hoisted? (expressions/value-expr (.isHoisted role))}))
+
+(defn member->map
+  [^Member member]
+  (when member
+    (merge
+      (user->map (.getUser member))
+      {:nickname (.getNickname member)
+       :joined-at (.getTimeJoined member)
+       :roles (map role->map (.getRoles member))})))
+
+(defn channel->map
+  [^Channel channel]
+  (when channel
+    {:id (expressions/value-expr (.getId channel))
+     :name (expressions/value-expr (.getName channel))
+     :type (expressions/value-expr (str (.getType channel)))}))
+
+(defn message->map
+  [^Message message]
+  (when message
+    {:id (expressions/value-expr (.getId message))
+     :content (expressions/value-expr (.getContentRaw message))
+     :author (user->map (.getAuthor message))
+     :channel (channel->map (.getChannel message))
+     :created-at (expressions/value-expr (.getTimeCreated message))
+     :attachments (expressions/value-expr (map #(hash-map :id (.getId %)
+                                                  :url (.getUrl %)
+                                                  :filename (.getFileName %))
+                                            (.getAttachments message)))
+     :reply-to (when-let [referenced (.getReferencedMessage message)]
+                 {:message-id (expressions/value-expr (.getId referenced))
+                  :author (user->map (.getAuthor referenced))
+                  :content (expressions/value-expr (.getContentRaw referenced))})}))
+
+(defn guild->map
+  [^Guild guild]
+  (when guild
+    {:id (.getId guild)
+     :name (.getName guild)
+     :owner-id (some-> guild .getOwner .getId)  ;; Use some-> to safely handle null
+     :member-count (.getMemberCount guild)}))
+
+(defn keyword->option-type
+  "Converts a keyword type to a JDA OptionType enum value"
+  [type-keyword]
+  (case type-keyword
+    :string  OptionType/STRING
+    :integer OptionType/INTEGER
+    :boolean OptionType/BOOLEAN
+    :user    OptionType/USER
+    :channel OptionType/CHANNEL
+    :role    OptionType/ROLE
+    (throw (ex-info "Unsupported option type"
+             {:type type-keyword
+              :supported-types #{:string :integer :boolean :user :channel :role}}))))
+
+===========================================================
+FILE: platform/discord/tracking/guild.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.tracking.guild
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.platform.discord.schema.definition.interaction :as schema.interactions]
+            [electric-starter-app.bot.util.state :as state]))
+
+(def guild-events
+  (->> schema.interactions/interaction-schemas
+    keys
+    (filter #(#{:guild-join :guild-leave :guild-ready :guild-unavailable
+                :guild-available :channel-create :channel-delete} %))
+    set))
+
+(defmulti handle-guild-event
+  "Multimethod to handle different types of guild events"
+  :interaction-type)
+
+(defmethod handle-guild-event :guild-join
+  [{:keys [bot-name guild-id guild-data]}]
+  (state/update-state! [:bots :botnames bot-name :guilds guild-id] guild-data))
+
+(defmethod handle-guild-event :guild-leave
+  [{:keys [bot-name guild-id]}]
+  (state/update-state! [:bots :botnames bot-name :guilds guild-id] nil))
+
+(defmethod handle-guild-event :guild-ready
+  [{:keys [bot-name guild-id guild-data]}]
+  (state/update-state! [:bots :botnames bot-name :guilds guild-id] guild-data))
+
+(defmethod handle-guild-event :guild-unavailable
+  [{:keys [bot-name guild-id]}]
+  (state/update-state! [:bots :botnames bot-name :guilds guild-id :available?] false))
+
+(defmethod handle-guild-event :guild-available
+  [{:keys [bot-name guild-id guild-data]}]
+  (state/update-state! [:bots :botnames bot-name :guilds guild-id] guild-data))
+
+(defmethod handle-guild-event :channel-create
+  [{:keys [bot-name guild-id channel-id channel-data]}]
+  (state/update-state! [:bots :botnames bot-name :guilds guild-id :channels channel-id] channel-data))
+
+(defmethod handle-guild-event :channel-delete
+  [{:keys [bot-name guild-id channel-id]}]
+  (state/update-state! [:bots :botnames bot-name :guilds guild-id :channels channel-id] nil))
+
+(defmethod handle-guild-event :default [_] nil)
+
+(defn guild-update
+  "Update guild and channel state based on interaction type.
+   Only processes events defined in the schema as guild events."
+  [interaction]
+  (when (guild-events (:interaction-type interaction))
+    (log/debug "Updating guild state for bot" (:bot-name interaction) "interaction:" interaction)
+    (handle-guild-event interaction)))
+
+===========================================================
+FILE: platform/discord/adapter.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.adapter
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.core.engine.interaction.processing :as interactions])
+  (:import [net.dv8tion.jda.api.hooks ListenerAdapter]
+           [net.dv8tion.jda.api.events.interaction.command SlashCommandInteractionEvent]))
+
+(defn create-adapter [bot-name]
+  (proxy [ListenerAdapter] []
+    ;; Handle all non-slash command events
+    (onGenericEvent [event]
+      (when-not (instance? SlashCommandInteractionEvent event)
+        (try
+          (when-let [transformed (interactions/transform-event event bot-name)]
+            (interactions/process-interaction transformed))
+          (catch Exception e
+            (log/error e "Error processing interaction"
+              {:event-type (-> event .getClass .getSimpleName)
+               :error (.getMessage e)})))))
+
+    ;; Enhanced slash command handling
+    (onSlashCommandInteraction [^SlashCommandInteractionEvent event]
+      (try
+        (log/info "Received slash command interaction"
+          {:command (.getName event)
+           :user (-> event .getUser .getName)
+           :guild (-> event .getGuild .getName)
+           :channel (-> event .getChannel .getName)
+           :options (when (.getOptions event)
+                      (into {} (map #(vector (.getName %) (.getAsString %))
+                                 (.getOptions event))))})
+
+        ;; Acknowledge the command immediately
+        (-> event
+          (.reply "Command processed successfully")
+          (.setEphemeral true)
+          (.queue
+            (reify java.util.function.Consumer
+              (accept [this success]
+                (log/debug "Successfully acknowledged slash command"
+                  {:command (.getName event)})))
+            (reify java.util.function.Consumer
+              (accept [this error]
+                (log/error error "Failed to acknowledge slash command"
+                  {:command (.getName event)})))))
+
+        ;; Process the command through the flow system
+        (when-let [transformed (interactions/transform-event event bot-name)]
+          (log/debug "Successfully transformed slash command event"
+            {:command (.getName event)
+             :interaction-type (:interaction-type transformed)
+             :guild-id (:guild-id transformed)})
+
+          (interactions/process-interaction transformed))
+
+        (catch Exception e
+          (log/error e "Error processing slash command"
+            {:command (.getName event)
+             :error-type (-> e .getClass .getSimpleName)
+             :error-message (.getMessage e)
+             :stack-trace (with-out-str
+                            (clojure.stacktrace/print-stack-trace e))}))))))
+
+===========================================================
+FILE: platform/discord/lifecycle/bot.clj
+===========================================================
+
+(ns electric-starter-app.bot.platform.discord.lifecycle.bot
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.util.state :as state]
+            [electric-starter-app.bot.storage.database :as db] 
+            [electric-starter-app.bot.core.engine.flow.state :as flow.state]
+            [electric-starter-app.bot.platform.discord.adapter :as discord]
+            [electric-starter-app.bot.impl.triggers :refer [command-triggers]])
+  (:import [net.dv8tion.jda.api JDABuilder]
+           [net.dv8tion.jda.api.entities Activity]
+           [net.dv8tion.jda.api.requests GatewayIntent]
+           [net.dv8tion.jda.api.interactions.commands.build Commands]
+           [net.dv8tion.jda.api.hooks ListenerAdapter]
+           [net.dv8tion.jda.api.events.guild GuildReadyEvent]
+           [net.dv8tion.jda.api.events.session ReadyEvent]))
+
+(defn register-commands-when-ready!
+  "Registers commands after bot is fully ready"
+  [jda]
+  (let [guild-ready-listener
+        (proxy [ListenerAdapter] []
+          (onGuildReady [^GuildReadyEvent event]
+            (try
+              (let [guild (.getGuild event)]
+                (log/info "Guild became ready - registering commands"
+                  {:guild-name (.getName guild)
+                   :guild-id (.getId guild)
+                   :member-count (.getMemberCount guild)})
+
+                (let [commands (.updateCommands guild)]
+                  (doseq [command command-triggers]
+                    (log/debug "Registering command for guild"
+                      {:command (:command-name command)
+                       :guild-name (.getName guild)})
+
+                    (let [builder (Commands/slash
+                                    (:command-name command)
+                                    (:description command))]
+                      (.addCommands commands (into-array [builder]))))
+
+                  (.queue commands
+                    (reify java.util.function.Consumer
+                      (accept [_ success]
+                        (log/info "Successfully registered commands for guild"
+                          {:guild-name (.getName guild)
+                           :command-count (count success)})))
+                    (reify java.util.function.Consumer
+                      (accept [_ error]
+                        (log/error error "Failed to register commands"
+                          {:guild-name (.getName guild)}))))))
+              (catch Exception e
+                (log/error e "Critical error in guild ready handler"
+                  {:event-type (-> event .getClass .getSimpleName)})))))
+
+        ready-listener
+        (proxy [ListenerAdapter] []
+          (onReady [^ReadyEvent _]
+            (try
+              (log/info "Bot fully ready"
+                {:connected-guilds (count (.getGuilds jda))
+                 :guild-names (mapv #(.getName %) (.getGuilds jda))})
+              (catch Exception e
+                (log/error e "Error in ready handler")))))]
+
+    (.addEventListener jda (into-array [guild-ready-listener ready-listener]))
+    (log/info "Registered event listeners for command handling"
+      {:listeners ["GuildReadyListener" "ReadyListener"]})))
+
+(defn start-bot
+  ([bot-name]
+   (log/debug "Attempting to start bot" bot-name "using config token")
+   (if-let [token (get-in @state/state [:bots :botnames bot-name :token])]
+     (do
+       (log/debug "Token found for bot" bot-name)
+       (start-bot token bot-name))
+     (do
+       (log/error "No token found for bot:" bot-name)
+       (throw (ex-info "No token found" {:bot bot-name})))))
+  ([token bot-name]
+   (try
+     (log/info "Starting bot" bot-name)
+     (log/debug "Initializing bot with token starting with" (subs token 0 10) "...")
+     (state/update-state! [:bots :botnames bot-name :status] "connecting")
+
+     ;; Initialize database
+     (log/info "Initializing database")
+     (db/init-db!)
+     (log/info "Database initialized successfully")
+
+     ;; Initialize flows
+     (flow.state/init!)
+     (log/debug "Configuring JDA builder with intents and activity")
+     (let [discord-adapter (discord/create-adapter bot-name)
+           jda (-> (JDABuilder/createDefault token)
+                 (.enableIntents [GatewayIntent/GUILD_MESSAGES
+                                  GatewayIntent/MESSAGE_CONTENT
+                                  GatewayIntent/GUILD_MEMBERS
+                                  GatewayIntent/GUILD_MESSAGE_REACTIONS])
+                 (.setActivity (Activity/playing "Electric Clojure"))
+                 (.addEventListeners (into-array [discord-adapter]))
+                 .build)]
+
+       (log/debug "JDA builder configured successfully")
+
+       ;; Register the ready-check listener instead of immediate registration
+       (register-commands-when-ready! jda)
+
+       (state/update-state! [:bots :botnames bot-name :jda] jda)
+       (state/update-state! [:bots :botnames bot-name :status] "online")
+       (log/info "Bot" bot-name "started successfully")
+       jda)
+     (catch Exception e
+       (log/error e "Failed to start bot" bot-name)
+       (state/update-state! [:bots :botnames bot-name :status] "error")
+       (throw (ex-info "Bot startup failed"
+                {:bot bot-name :error (.getMessage e)}
+                e))))))
+
+(defn stop-bot [bot-name]
+  (log/info "Attempting to stop bot" bot-name)
+  (if-let [jda (get-in @state/state [:bots :botnames bot-name :jda])]
+    (try
+      (log/debug "Found JDA instance for bot" bot-name)
+      (state/update-state! [:bots :botnames bot-name :status] "disconnecting")
+      (log/debug "Shutting down JDA instance")
+      (.shutdown jda)
+      (state/update-state! [:bots :botnames bot-name :jda] nil)
+      (state/update-state! [:bots :botnames bot-name :status] "offline")
+      (log/info "Bot" bot-name "stopped successfully")
+      (catch Exception e
+        (log/error e "Error while stopping bot" bot-name)
+        (throw (ex-info "Bot shutdown failed"
+                 {:bot bot-name :error (.getMessage e)}
+                 e))))
+    (do
+      (log/warn "No running JDA instance found for bot" bot-name)
+      (state/update-state! [:bots :botnames bot-name :status] "offline"))))
+
+===========================================================
+FILE: impl/flows.clj
+===========================================================
+
+(ns electric-starter-app.bot.impl.flows
+  (:require [electric-starter-app.bot.core.schema.definition.expression :refer [path-expr value-expr map-expr str-expr]]))
+
+(def register
+  {:name :register
+   :description "Registers a new member in the system"
+   :context-schema {:channel-id {:source :interaction
+                                 :path [:channel-id]}
+                    :bot-name {:source :interaction
+                               :path [:bot-name]}
+                    :connection {:source :bot-state
+                                 :path [:bots :botnames :bot-name :jda]}
+                    :member-id {:source :interaction
+                                :path [:member :id]}}
+   :steps
+   [{:action :db-operation
+     :inputs {:operation (value-expr :profile-create)
+              :member-id (path-expr [:member-id])}
+     :outputs {:success :db-success
+               :message :db-message
+               :error :db-error}}
+    {:action :send-message
+     :inputs {:connection (path-expr [:connection])
+              :channel-id (path-expr [:channel-id])
+              :bot-name (path-expr [:bot-name])
+              :content (map-expr
+                         {:success (path-expr [:action-outputs :db-success])
+                          :message (path-expr [:action-outputs :db-message])
+                          :error (path-expr [:action-outputs :db-error])})}
+     :outputs {:message-id :response-message-id}}
+    {:action :end-conversation
+     :inputs {}
+     :outputs {:success :conversation-ended}}]})
+
+(def collect-responses
+  {:name :collect-responses
+   :description "Collects and acknowledges responses to a specific message"
+   :context-schema {:channel-id {:source :interaction
+                                 :path [:channel-id]}
+                    :bot-name {:source :interaction
+                               :path [:bot-name]}
+                    :connection {:source :bot-state
+                                 :path [:bots :botnames :bot-name :jda]}
+                    :author-id {:source :interaction
+                                :path [:member :id]}}
+   :steps
+   [;; Step 1: Send initial prompt message
+    {:action :send-message
+     :inputs {:connection (path-expr [:connection])
+              :channel-id (path-expr [:channel-id])
+              :bot-name (path-expr [:bot-name])
+              :content "Please reply to this message! I will acknowledge each reply."}
+     :outputs {:message-id :prompt-message-id}}
+
+    ;; Step 2: Wait for replies - using queue-based wait state
+    {:wait {:interaction-type :message-received
+            :store-as :collected-replies
+            :queue? true
+            :input-filters {:channel-id (path-expr [:channel-id])
+                            :message-data {:reply-to {:message-id (path-expr [:action-outputs :prompt-message-id])}}}}}
+
+    ;; Step 3: Acknowledge each reply - modified to use simpler string building
+    {:action :send-message
+     :inputs {:connection (path-expr [:connection])
+              :channel-id (path-expr [:channel-id])
+              :bot-name (path-expr [:bot-name])
+              :content (str-expr
+                         {:message (path-expr [:waiting-state :collected-replies :interaction :message-data :content])
+                          :separator " | ID: "
+                          :id (path-expr [:waiting-state :collected-replies :interaction :message-data :id])})}
+     :outputs {:message-id :acknowledgment-message-id}}]})
+
+(def available-flows
+  {:register register
+   :collect-responses collect-responses})
+
+===========================================================
+FILE: impl/triggers.clj
+===========================================================
+
+(ns electric-starter-app.bot.impl.triggers
+  (:require [electric-starter-app.bot.platform.discord.schema.definition.trigger :as schema.triggers]))
+
+(def command-triggers
+  [(schema.triggers/create-trigger
+     {:name :register
+      :command-name "register"
+      :description "Register yourself as a member"
+      :flow-id :register})
+
+   (schema.triggers/create-trigger
+     {:name :collect
+      :command-name "collect"
+      :description "Start collecting responses from users"
+      :flow-id :collect-responses})])
+
+(def trigger-registry
+  (into {}
+    (map (juxt :command-name identity)
+      command-triggers)))
+
+===========================================================
+FILE: impl/actions.clj
+===========================================================
+
+(ns electric-starter-app.bot.impl.actions
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.storage.database :as db]))
+
+;; Action handler implementations
+(defn send-message-handler
+  "Handles sending a message to a Discord channel.
+   Returns a map containing success status and optional error details."
+  [{:keys [connection channel-id content]} ctx]
+  (log/debug "Attempting to send message"
+    {:channel-id channel-id
+     :content content})
+  (if-let [channel (.getTextChannelById connection channel-id)]
+    (try
+      ;; Handle different content types (string, map with success/message)
+      (let [final-content (cond
+                            (and (map? content)
+                              (contains? content :success)
+                              (contains? content :message))
+                            (:message content)
+
+                            (map? content)
+                            (str content)
+
+                            :else
+                            content)
+            future-message (-> channel
+                             (.sendMessage final-content)
+                             .submit)]
+        {:message-id (.getId (.get future-message))
+         :success true
+         :error nil})
+      (catch Exception e
+        (log/error e "Failed to send message"
+          {:channel-id channel-id
+           :content content})
+        {:success false
+         :message-id nil
+         :error {:type :message-failed
+                 :details (.getMessage e)}}))
+    (do
+      (log/error "Could not find channel" {:channel-id channel-id})
+      {:success false
+       :message-id nil
+       :error {:type :channel-not-found
+               :details {:channel-id channel-id}}})))
+
+(defn end-conversation-handler
+  "Simple handler that marks a conversation as complete.
+   Always returns success as this is a terminal operation."
+  [_ ctx]
+  (log/debug "Ending conversation")
+  {:success true})
+
+;; Database operation handlers
+(defmulti handle-db-operation
+  "Multimethod for handling different types of database operations"
+  (fn [operation-type & _] operation-type))
+
+(defmethod handle-db-operation :profile-create
+  [_ {:keys [member-id]} _]
+  (log/debug "Creating member profile" {:member-id member-id})
+  (let [result (db/create-profile! member-id)]
+    (if (:error result)
+      {:success false
+       :message (get-in result [:error :message])
+       :error (:error result)}
+      {:success true
+       :message "Profile created successfully"})))
+
+(defmethod handle-db-operation :default
+  [operation-type & _]
+  (log/error "Unsupported database operation" {:type operation-type})
+  {:success false
+   :error {:type :unsupported-operation
+           :message (str "Unsupported database operation: " operation-type)}})
+
+(defn db-operation-handler
+  "Main handler for database operations.
+   Routes operations to appropriate handlers based on operation type."
+  [{:keys [operation member-id]} ctx]
+  (handle-db-operation operation {:member-id member-id} ctx))
+
+;; Action definitions
+(def send-message-action
+  {:name :send-message
+   :description "Sends a message to a Discord channel"
+   :spec {:inputs {:connection {:type :jda-client
+                                :required true
+                                :doc "JDA client instance"}
+                   :channel-id {:type :string
+                                :required true
+                                :doc "Discord channel ID"}
+                   :bot-name {:type :string
+                              :required true
+                              :doc "Name of bot sending message"}
+                   :content {:type :any
+                             :required true
+                             :doc "Message content - string or content map"}}
+          :outputs {:message-id {:type :string
+                                 :required false
+                                 :doc "ID of sent message"}
+                    :success {:type :boolean
+                              :required true
+                              :doc "Whether message was sent successfully"}
+                    :error {:type :map
+                            :required false
+                            :doc "Error information if message failed"}}}
+   :handler send-message-handler})
+
+(def end-conversation-action
+  {:name :end-conversation
+   :description "Ends the current conversation"
+   :spec {:inputs {}
+          :outputs {:success {:type :boolean
+                              :required true
+                              :doc "Whether conversation ended successfully"}}}
+   :handler end-conversation-handler})
+
+(def db-operation-action
+  {:name :db-operation
+   :description "Performs database operations"
+   :acceptable-errors #{:profile-exists}  ; This error should continue flow
+   :spec {:inputs {:operation {:type :keyword
+                               :required true
+                               :doc "Type of database operation to perform"}
+                   :member-id {:type :string
+                               :required true
+                               :doc "Discord member ID to operate on"}}
+          :outputs {:success {:type :boolean
+                              :required true
+                              :doc "Whether the operation was successful"}
+                    :message {:type :string
+                              :required true
+                              :doc "Operation result message"}
+                    :error {:type :map
+                            :required false
+                            :doc "Error information if operation failed"}}}
+   :handler db-operation-handler})
+
+;; Action registry
+;; Simply register actions without validation - validation will happen elsewhere
+(def registered-actions
+  (try
+    (let [actions [send-message-action
+                   end-conversation-action
+                   db-operation-action]]
+      (into {} (map (juxt :name identity) actions)))
+    (catch Exception e
+      (log/error e "Failed to register actions")
+      (throw e))))
+
+===========================================================
+FILE: util/state.clj
+===========================================================
+
+(ns electric-starter-app.bot.util.state
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.util.config :as config]))
+
+(def state (atom nil))
+
+(defn update-state!
+  "Updates a specific path in the state atom with a new value.
+   state-path - vector of keywords representing the path to update
+   value - new value to set at the path
+   Returns the updated state."
+  [state-path value]
+  (log/debug "Updating state at path" state-path)
+  (try
+    (swap! state update-in state-path (constantly value))
+    (log/debug "State updated successfully at path" state-path "with value:" value)
+    @state
+    (catch Exception e
+      (log/error e "Failed to update state at path" state-path)
+      (throw (ex-info "State update failed"
+               {:path state-path
+                :value value
+                :error (.getMessage e)}
+               e)))))
+
+;; Initialize state on namespace load
+(log/info "Initializing application state")
+(def initial-state
+  (merge (config/get-config)
+    {:flows {:registry {}    ; Flow definitions will be stored here
+             :contexts {}}})) ; Flow execution contexts will be stored here
+
+(reset! state initial-state)
+(log/info "Application state initialized successfully")
+
+===========================================================
+FILE: util/config.clj
+===========================================================
+
+(ns electric-starter-app.bot.util.config
+  (:require [clojure.tools.logging :as log]
+            [clojure.java.io :as io]
+            [clojure.edn :as edn]))
+
+(defn get-config
+  "Reads configuration from config.edn file.
+   config-path - vector of keywords representing the path to desired config section
+   Returns the entire config if no path is provided."
+  ([]
+   (get-config []))
+  ([config-path]
+   (log/debug "Loading configuration from config.edn with path" config-path)
+   (try
+     (let [config-file (io/resource "config.edn")
+           _ (log/debug "Found config file at" config-file)
+           full-config (-> config-file
+                         slurp
+                         edn/read-string)
+           _ (log/debug "Successfully parsed config.edn")
+           config-value (if (empty? config-path)
+                          full-config
+                          (get-in full-config config-path))]
+       (if config-value
+         (do
+           (log/info "Configuration loaded successfully for path" config-path)
+           (log/debug "Loaded config content:" config-value)
+           config-value)
+         (do
+           (log/error "No configuration found at path" config-path)
+           (throw (ex-info "Configuration path not found"
+                    {:path config-path
+                     :available-keys (keys full-config)})))))
+     (catch Exception e
+       (log/error e "Failed to load configuration")
+       (throw e)))))
+
+===========================================================
+FILE: core/schema/definition/context.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.definition.context
+  (:require [electric-starter-app.bot.platform.discord.schema.definition.interaction :refer [interaction-schemas]]
+            [electric-starter-app.bot.core.schema.validation.wait-state :as wait-state]))
+
+(def context-schema
+  "Schema defining the structure and initial values for flow contexts."
+  {:id {:type :uuid
+        :required true
+        :doc "Unique identifier for the context"}
+
+   :flow-id {:type :keyword
+             :required true
+             :doc "ID of the flow being executed"}
+
+   :current-step-index {:type :integer
+                        :required true
+                        :initial-value 0
+                        :doc "Current position in flow steps sequence"}
+
+   :interaction {:type :map
+                 :required true
+                 :validation #(contains? interaction-schemas (:interaction-type %))
+                 :doc "Original interaction that triggered the flow"}
+
+   :action-outputs {:type :map
+                    :required true
+                    :initial-value {}
+                    :doc "Accumulated outputs from executed actions (excluding waiting states)"}
+
+   :waiting-state {:type :map
+                   :required true
+                   :initial-value {}
+                   :validation wait-state/validate-waiting-states
+                   :doc "Map of named wait states to their current status"}
+
+   :error {:type :map
+           :required false
+           :doc "Error information if flow execution failed"}})
+
+===========================================================
+FILE: core/schema/definition/action.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.definition.action)
+
+(def field-types
+  #{:string :integer :boolean :map :vector :jda-client :function :keyword :any})
+
+(def action-schema
+  {:name {:type :keyword
+          :required true
+          :doc "Unique identifier for the action"}
+   :description {:type :string
+                 :required true
+                 :doc "Human readable description of the action"}
+   :acceptable-errors {:type :set
+                       :required false
+                       :doc "Set of error types that should not halt flow execution"}
+   :spec {:type :map
+          :required true
+          :doc "Input and output specifications"}
+   :handler {:type :function
+             :required true
+             :doc "Function that executes the action"}})
+
+===========================================================
+FILE: core/schema/definition/expression.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.definition.expression)
+
+(def expression-schema
+  "Schema for declarative value expressions in action inputs"
+  {:type {:type [:enum [:path :value :map :str-concat]]
+          :required true
+          :doc "Type of expression - path reference, direct value, map of expressions, or string concatenation"}
+
+   :path {:type [:vector :keyword]
+          :required {:when {:type :path}}
+          :doc "Vector of keys to look up in context"}
+
+   :value {:type :any
+           :required {:when {:type :value}}
+           :doc "Direct value to use"}
+
+   :expressions {:type [:map-of :keyword expression-schema]
+                 :required {:when #{:map :str-concat}}
+                 :doc "Map of nested expressions"}})
+
+(defn path-expr
+  "Creates a path reference expression"
+  [path]
+  {:type :path
+   :path path})
+
+(defn value-expr
+  "Creates a direct value expression"
+  [value]
+  {:type :value
+   :value value})
+
+(defn map-expr
+  "Creates a map of expressions"
+  [exprs]
+  {:type :map
+   :expressions exprs})
+
+(defn str-expr
+  "Creates a string concatenation expression from a map of parts"
+  [parts-map]
+  {:type :str-concat
+   :expressions (reduce-kv
+                  (fn [acc k v]
+                    (assoc acc k
+                      (if (string? v)
+                        {:type :value, :value v}
+                        v)))
+                  {}
+                  parts-map)})
+
+===========================================================
+FILE: core/schema/definition/wait_state.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.definition.wait-state
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.platform.discord.schema.definition.interaction :refer [interaction-schemas]]))
+
+(def waiting-state-schema
+  "Schema for individual waiting state entries"
+  {:interaction-type {:type :keyword
+                      :required true
+                      :validation #(contains? interaction-schemas %)
+                      :doc "Type of interaction being waited for"}
+
+   :input-filters {:type :map
+                   :required false
+                   :doc "Conditions that must be met by the incoming interaction"}
+
+   :output-filters {:type :vector
+                    :required false
+                    :doc "Vector of maps containing target step index and conditions"}
+
+   :interaction {:type :map
+                 :required false
+                 :validation #(when % (contains? interaction-schemas (:interaction-type %)))
+                 :doc "The received interaction that satisfied this wait state, nil if still waiting"}
+
+   :queue? {:type :boolean
+            :required false
+            :default false
+            :doc "Whether this wait state should queue matching interactions"}
+
+   :queue {:type :vector
+           :required false
+           :initial-value []
+           :doc "Queue of pending interactions"}})
+
+(defn create-wait-state
+  "Creates a new waiting state entry with validated and resolved filters"
+  [interaction-type & {:keys [input-filters output-filters queue?]}]
+  (log/debug "Creating wait state entry"
+    {:interaction-type interaction-type
+     :input-filters input-filters
+     :output-filters output-filters
+     :queue? queue?})
+
+  {:interaction-type interaction-type
+   :input-filters (or input-filters {})
+   :output-filters (or output-filters [])
+   :interaction nil
+   :queue? (boolean queue?)
+   :queue (when queue? [])})
+
+(defn complete-wait-state
+  "Returns an updated wait state entry with the received interaction."
+  [wait-state interaction]
+  (log/debug "Completing wait state" {:interaction-type (:interaction-type wait-state)})
+  (assoc wait-state :interaction interaction))
+
+===========================================================
+FILE: core/schema/validation/context.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.validation.context
+  (:require [clojure.tools.logging :as log] 
+            [electric-starter-app.bot.core.schema.definition.context :refer [context-schema]]))
+
+(defn initialize-context
+  "Creates a new context map with initial values from schema.
+   Merges provided values with schema defaults."
+  [initial-values]
+  (log/debug "Initializing new context" {:initial-values initial-values})
+  (let [context (reduce-kv
+                  (fn [ctx k v]
+                    (assoc ctx k (or (get initial-values k)
+                                   (:initial-value v)
+                                   nil)))
+                  {}
+                  context-schema)]
+    (log/debug "Context initialized" {:context context})
+    context))
+
+(defn validate-context
+  "Validates a context map against the schema.
+   Returns context if valid, throws ex-info if invalid."
+  [context]
+  (log/debug "Validating context" {:context-id (:id context)})
+
+  ;; Validate required fields and their types
+  (doseq [[k v] context-schema
+          :when (:required v)]
+    (when (nil? (get context k))
+      (throw (ex-info "Missing required context field"
+               {:field k
+                :context-id (:id context)})))
+
+    (when-let [validate (:validation v)]
+      (when-not (validate (get context k))
+        (throw (ex-info "Invalid context field value"
+                 {:field k
+                  :value (get context k)
+                  :context-id (:id context)})))))
+  context)
+
+===========================================================
+FILE: core/schema/validation/action.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.validation.action
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.core.schema.definition.expression :as schema.expressions]
+            [electric-starter-app.bot.platform.discord.schema.definition.interaction :as schema.interactions]
+            [electric-starter-app.bot.core.schema.validation.expression :as validation.expressions]
+            [electric-starter-app.bot.core.schema.definition.action :refer [field-types action-schema]]
+            [electric-starter-app.bot.impl.actions :refer [registered-actions]]))
+
+(defn validate-field-definition
+  "Validates a single field definition"
+  [field-def]
+  (and (map? field-def)
+    (contains? field-types (:type field-def))
+    (string? (:doc field-def))))
+
+(defn validate-fields-map
+  "Validates a map of field definitions"
+  [fields]
+  (and (map? fields)
+    (every? (fn [[k v]]
+              (and (keyword? k)
+                (validate-field-definition v)))
+      fields)))
+
+(defn validate-io-spec
+  "Validates input/output specification"
+  [spec]
+  (and (map? spec)
+    (validate-fields-map spec)))
+
+(defn validate-required-fields
+  "Validates presence of required fields"
+  [action schema]
+  (every? #(contains? action %)
+    (map first (filter #(:required (second %)) schema))))
+
+(defn validate-action-spec
+  "Validates action spec including expressions in inputs and outputs.
+   Uses new action registry and schema validation."
+  [action-spec]
+  (let [{:keys [action inputs outputs]} action-spec]
+    (log/debug "Validating action spec"
+      {:action action
+       :has-inputs (boolean inputs)
+       :has-outputs (boolean outputs)})
+
+    ;; Validate action exists in registry
+    (when-not (contains? registered-actions action)
+      (throw (ex-info "Unknown action type"
+               {:action action
+                :available-actions (keys registered-actions)})))
+
+    (let [action-def (get registered-actions action)
+          spec-inputs (get-in action-def [:spec :inputs])
+          spec-outputs (get-in action-def [:spec :outputs])]
+
+      ;; Validate inputs and their expressions
+      (when inputs
+        (doseq [[input-key input-value] inputs]
+          (when-not (contains? spec-inputs input-key)
+            (throw (ex-info "Invalid input for action"
+                     {:action action
+                      :invalid-input input-key
+                      :valid-inputs (keys spec-inputs)
+                      :action-description (:description action-def)})))
+
+          ;; Validate expression
+          (when (map? input-value)
+            (try
+              (validation.expressions/validate-expression input-value)
+              (catch Exception e
+                (throw (ex-info "Invalid expression in action input"
+                         {:action action
+                          :input input-key
+                          :expression input-value
+                          :error (.getMessage e)})))))))
+
+      ;; Handle special case for wait-for-interaction
+      ;; Justification: This is core flow functionality that needs to be maintained
+      ;; even with new action system
+      (when (= action :wait-for-interaction)
+        (let [interaction-type (when-let [type-expr (get inputs :interaction-type)]
+                                 (if (map? type-expr)
+                                   (validation.expressions/evaluate-expression type-expr {})
+                                   type-expr))]
+
+          (when-not (contains? schema.interactions/interaction-schemas interaction-type)
+            (throw (ex-info "Invalid interaction type in wait action"
+                     {:action action
+                      :invalid-type interaction-type
+                      :valid-types (keys schema.interactions/interaction-schemas)})))
+
+          (when-not (and outputs
+                      (contains? outputs :waiting-state)
+                      (keyword? (:waiting-state outputs)))
+            (throw (ex-info "wait-for-interaction must map :waiting-state output to a keyword"
+                     {:action action
+                      :outputs outputs})))))
+
+      ;; Validate outputs based on action type
+      (when outputs
+        (if (= action :wait-for-interaction)
+          ;; Special case validation
+          (do
+            (when-not (contains? outputs :waiting-state)
+              (throw (ex-info "Missing :waiting-state output mapping for wait-for-interaction"
+                       {:action action
+                        :outputs outputs})))
+            (when-not (keyword? (:waiting-state outputs))
+              (throw (ex-info "wait-for-interaction :waiting-state output must be mapped to a keyword"
+                       {:action action
+                        :waiting-state (:waiting-state outputs)
+                        :type (type (:waiting-state outputs))}))))
+
+          ;; Standard action output validation
+          (doseq [[output-key output-target] outputs]
+            (when-not (contains? spec-outputs output-key)
+              (throw (ex-info "Invalid output mapping for action"
+                       {:action action
+                        :invalid-output output-key
+                        :valid-outputs (keys spec-outputs)
+                        :action-description (:description action-def)})))
+
+            (when-not (keyword? output-target)
+              (throw (ex-info "Output must be mapped to a keyword"
+                       {:action action
+                        :output output-key
+                        :target output-target}))))))
+
+      (log/debug "Action spec validation completed"
+        {:action action
+         :valid true})
+
+      action-spec)))
+
+(defn validate-field-types
+  "Validates types of fields"
+  [action schema]
+  (every? (fn [[field spec]]
+            (case (:type spec)
+              :keyword (keyword? (get action field))
+              :string (string? (get action field))
+              :map (map? (get action field))
+              :function (fn? (get action field))
+              :set (or (nil? (get action field))  ; Optional field
+                     (set? (get action field)))
+              true))
+    schema))
+
+(defn validate-action-definition
+  "Validates an action definition against the schema"
+  [action]
+  (log/debug "Validating action" {:action-name (:name action)})
+  (try
+    (when-not (validate-required-fields action action-schema)
+      (throw (ex-info "Missing required fields"
+               {:action action
+                :schema action-schema})))
+
+    (when-not (validate-field-types action action-schema)
+      (throw (ex-info "Invalid field types"
+               {:action action
+                :schema action-schema})))
+
+    (when-not (validate-action-spec (:spec action))
+      (throw (ex-info "Invalid action specification"
+               {:action-name (:name action)
+                :spec (:spec action)})))
+
+    true
+    (catch Exception e
+      (log/error e "Action validation failed" {:action action})
+      false)))
+
+
+
+(defn validate-action-inputs
+  "Validates action inputs against their spec and expression schema.
+   Checks required inputs, types, and expression structure."
+  [action-type inputs]
+  (log/debug "Validating action inputs"
+    {:action action-type :inputs (keys inputs)})
+
+  (when-not (contains? registered-actions action-type)
+    (throw (ex-info "Unknown action type"
+             {:action action-type
+              :available-actions (keys registered-actions)})))
+
+  (let [action-def (get registered-actions action-type)
+        input-spec (get-in action-def [:spec :inputs])]
+
+    ;; Validate required inputs
+    (doseq [[input-key {:keys [required type doc validation]}] input-spec
+            :when required]
+      (when-not (contains? inputs input-key)
+        (throw (ex-info "Missing required input"
+                 {:action action-type
+                  :missing-input input-key
+                  :input-doc doc
+                  :expected-type type})))
+
+      ;; Validate type and custom validation if present
+      (when-let [input-value (get inputs input-key)]
+        (when validation
+          (when-not (validation input-value)
+            (throw (ex-info "Input validation failed"
+                     {:action action-type
+                      :input input-key
+                      :value input-value
+                      :type type}))))))
+
+    ;; Validate input value expressions
+    (doseq [[input-key input-value] inputs]
+      (when (and (map? input-value) (:type input-value))
+        (try
+          (validation.expressions/validate-expression input-value)
+          (catch Exception e
+            (throw (ex-info "Invalid input expression"
+                     {:action action-type
+                      :input input-key
+                      :expression input-value
+                      :error (.getMessage e)}))))))
+    inputs))
+
+(defn validate-action-outputs
+  "Validates action outputs against their spec.
+   Handles both required outputs and type validation."
+  [action-type outputs]
+  (log/debug "Validating action outputs"
+    {:action action-type :outputs (keys outputs)})
+
+  (when-not (contains? registered-actions action-type)
+    (throw (ex-info "Unknown action type"
+             {:action action-type
+              :available-actions (keys registered-actions)})))
+
+  (let [action-def (get registered-actions action-type)
+        output-spec (get-in action-def [:spec :outputs])]
+
+    ;; Validate required outputs and their types
+    (doseq [[output-key {:keys [required type validation doc]}] output-spec]
+      ;; Check required outputs
+      (when (and required (not (contains? outputs output-key)))
+        (throw (ex-info "Missing required output"
+                 {:action action-type
+                  :missing-output output-key
+                  :output-doc doc})))
+
+      ;; Validate type and custom validation if value exists
+      (when-let [output-value (get outputs output-key)]
+        (when validation
+          (when-not (validation output-value)
+            (throw (ex-info "Output validation failed"
+                     {:action action-type
+                      :output output-key
+                      :value output-value
+                      :type type
+                      :doc doc}))))))
+
+    ;; Check for unexpected outputs
+    (doseq [output-key (keys outputs)]
+      (when-not (contains? output-spec output-key)
+        (log/warn "Unexpected output from action"
+          {:action action-type
+           :unexpected-output output-key
+           :valid-outputs (keys output-spec)})))
+
+    outputs))
+
+===========================================================
+FILE: core/schema/validation/expression.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.validation.expression
+  (:require [clojure.tools.logging :as log]
+            [clojure.string :as str]))
+
+(declare evaluate-expression)
+
+(defn is-expression? [v]
+  (and (map? v)
+    (contains? v :type)
+    (contains? #{:path :value :map :str-concat} (:type v))))
+
+(defn validate-path
+  "Validates a path vector against the schema"
+  [path]
+  (when-not (vector? path)
+    (throw (ex-info "Path must be a vector"
+             {:path path
+              :type (type path)})))
+
+  (when-not (every? keyword? path)
+    (throw (ex-info "Path must contain only keywords"
+             {:path path
+              :invalid-elements (remove keyword? path)})))
+  path)
+
+(defn validate-expression
+  "Validates an expression against the expression schema.
+   Returns the expression if valid, throws if invalid."
+  [expr]
+  (when-not (map? expr)
+    (throw (ex-info "Expression must be a map"
+             {:value expr
+              :type (type expr)})))
+
+  (when-not (contains? expr :type)
+    (throw (ex-info "Expression must have a :type"
+             {:expression expr})))
+
+  (when-not (#{:path :value :map :str-concat} (:type expr))
+    (throw (ex-info "Invalid expression type"
+             {:type (:type expr)
+              :valid-types #{:path :value :map :str-concat}})))
+
+  (case (:type expr)
+    :path (do
+            (when-not (contains? expr :path)
+              (throw (ex-info "Path expression must have :path key"
+                       {:expression expr})))
+            (validate-path (:path expr)))
+
+    :value (when-not (contains? expr :value)
+             (throw (ex-info "Value expression must have :value key"
+                      {:expression expr})))
+
+    (:map :str-concat)
+    (do
+      (when-not (contains? expr :expressions)
+        (throw (ex-info "Expression must have :expressions key"
+                 {:expression expr})))
+      (when-not (map? (:expressions expr))
+        (throw (ex-info "Expressions value must be a map"
+                 {:expression expr
+                  :expressions (:expressions expr)})))))
+
+  expr)
+
+(defn evaluate-map-expressions
+  "Evaluates a map of expressions and combines the results"
+  [expressions ctx]
+  (reduce-kv
+    (fn [acc k v]
+      (assoc acc k (evaluate-expression v ctx)))
+    {}
+    expressions))
+
+(defn evaluate-expression
+  "Evaluates an expression based on the expression schema, returning resolved value.
+   Handles path references, direct values, nested maps and type/value structures."
+  [expr ctx]
+  (when expr
+    (log/debug "Evaluating expression" {:expr expr :type (type expr)})
+    (cond
+      ;; Handle type/value maps - commonly used in discord data
+      (and (map? expr) (:type expr) (= :value (:type expr)))
+      (do
+        (log/debug "Found type/value map" {:value (:value expr)})
+        (:value expr))
+
+      ;; Handle expression schema types
+      (and (map? expr) (:type expr))
+      (case (:type expr)
+        :path (get-in ctx (:path expr))
+        :value (:value expr)
+        :map (reduce-kv
+               (fn [acc k v]
+                 (assoc acc k (evaluate-expression v ctx)))
+               {}
+               (:expressions expr))
+        :str-concat (let [resolved-exprs (evaluate-map-expressions (:expressions expr) ctx)]
+                      (str/join "" (vals resolved-exprs)))
+        (throw (ex-info "Unknown expression type"
+                 {:expression expr
+                  :type (:type expr)})))
+
+      ;; Handle nested maps that might contain expressions
+      (map? expr)
+      (reduce-kv
+        (fn [m k v]
+          (assoc m k (evaluate-expression v ctx)))
+        {}
+        expr)
+
+      ;; Handle vector of expressions
+      (vector? expr)
+      (mapv #(evaluate-expression % ctx) expr)
+
+      ;; Default - return as is
+      :else expr)))
+
+
+
+(defn evaluate-str-concat-expressions
+  "Evaluates expressions and concatenates them into a string"
+  [expressions ctx]
+  (->> expressions
+    (evaluate-map-expressions ctx)
+    vals
+    (map str)  ;; Ensure everything is converted to string
+    (apply str)))
+
+
+
+===========================================================
+FILE: core/schema/validation/wait_state.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.schema.validation.wait-state
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.core.schema.definition.wait-state :refer [waiting-state-schema]]
+            [electric-starter-app.bot.platform.discord.schema.definition.interaction :as schema.interactions]))
+
+(defn validate-waiting-state-entry
+  "Validates a single waiting state entry against the schema.
+   Returns true if valid, throws detailed exception if invalid."
+  [wait-id entry]
+  (log/debug "Validating waiting state entry" {:wait-id wait-id :entry entry})
+
+  (doseq [[field spec] waiting-state-schema]
+    (when (:required spec)
+      (when-not (contains? entry field)
+        (throw (ex-info "Missing required field in waiting state"
+                 {:wait-id wait-id
+                  :missing-field field
+                  :entry entry}))))
+
+    (when-let [validate (:validation spec)]
+      (let [value (get entry field)]
+        (when (and value (not (validate value)))
+          (throw (ex-info "Invalid field value in waiting state"
+                   {:wait-id wait-id
+                    :field field
+                    :value value}))))))
+
+  ;; Additional validation for output filters structure
+  (when-let [output-filters (:output-filters entry)]
+    (when-not (vector? output-filters)
+      (throw (ex-info "Output filters must be a vector"
+               {:wait-id wait-id
+                :output-filters output-filters})))
+
+    (doseq [filter output-filters]
+      (when-not (and (map? filter)
+                  (contains? filter :target-step)
+                  (contains? filter :conditions)
+                  (number? (:target-step filter))
+                  (map? (:conditions filter)))
+        (throw (ex-info "Invalid output filter structure"
+                 {:wait-id wait-id
+                  :filter filter})))))
+
+  true)
+
+(defn validate-waiting-states
+  "Validates the complete waiting-state map structure.
+   Returns true if valid, throws detailed exception if invalid."
+  [waiting-states]
+  (log/debug "Validating waiting states structure" {:states waiting-states})
+  (when-not (map? waiting-states)
+    (throw (ex-info "waiting-state must be a map"
+             {:value waiting-states
+              :type (type waiting-states)})))
+
+  (doseq [[wait-id entry] waiting-states]
+    (when-not (keyword? wait-id)
+      (throw (ex-info "Waiting state ID must be a keyword"
+               {:wait-id wait-id
+                :type (type wait-id)})))
+
+    (when-not (map? entry)
+      (throw (ex-info "Waiting state entry must be a map"
+               {:wait-id wait-id
+                :value entry
+                :type (type entry)})))
+
+    (validate-waiting-state-entry wait-id entry))
+
+  ;; Split regular and queue wait states
+  (let [regular-waits (filter (fn [[_ v]]
+                                (and (not (:queue? v))
+                                  (nil? (:interaction v))))
+                        waiting-states)
+        queue-waits (filter (fn [[_ v]] (:queue? v)) waiting-states)]
+
+    ;; Ensure only one regular wait state is active at a time
+    (when (> (count regular-waits) 1)
+      (throw (ex-info "Multiple active regular wait states detected"
+               {:active-wait-ids (map first regular-waits)})))
+
+    ;; Ensure queue wait states have valid queue
+    (doseq [[wait-id entry] queue-waits]
+      (when-not (vector? (:queue entry))
+        (throw (ex-info "Queue must be a vector"
+                 {:wait-id wait-id
+                  :queue (:queue entry)})))))
+
+  true)
+
+(defn validate-wait-step
+  "Validates a wait step specification from a flow definition"
+  [{:keys [interaction-type input-filters output-filters store-as queue?] :as wait-step}]
+  (log/debug "Validating wait step"
+    {:interaction-type interaction-type
+     :store-as store-as
+     :queue? queue?})
+
+  (when-not interaction-type
+    (throw (ex-info "Wait step missing interaction-type"
+             {:wait-step wait-step})))
+
+  (when-not store-as
+    (throw (ex-info "Wait step missing store-as field"
+             {:wait-step wait-step})))
+
+  (when-not (keyword? store-as)
+    (throw (ex-info "Wait step store-as must be a keyword"
+             {:store-as store-as
+              :type (type store-as)})))
+
+  ;; Validate input filters structure if present
+  (when input-filters
+    (when-not (map? input-filters)
+      (throw (ex-info "Input filters must be a map"
+               {:input-filters input-filters}))))
+
+  ;; Validate output filters if present
+  (when output-filters
+    (when-not (vector? output-filters)
+      (throw (ex-info "Output filters must be a vector"
+               {:wait-step wait-step}))))
+
+  wait-step)
+
+(defn validate-waiting-state
+  "Validates a waiting state specification against schema.
+   Checks interaction type and optional filters."
+  [waiting-state]
+  (log/debug "Validating waiting state" {:state waiting-state})
+  (let [{:keys [interaction-type filters]} waiting-state]
+    ;; Validate interaction type exists
+    (when-not (contains? schema.interactions/interaction-schemas interaction-type)
+      (throw (ex-info "Invalid interaction type in waiting state"
+               {:type interaction-type
+                :valid-types (keys schema.interactions/interaction-schemas)})))
+
+    ;; Validate filters against schema if present
+    (when filters
+      (let [schema-fields (get-in schema.interactions/interaction-schemas [interaction-type :fields])]
+        (doseq [[field-path _] filters]
+          (let [field-key (if (vector? field-path) (first field-path) field-path)]
+            (when-not (contains? schema-fields field-key)
+              (throw (ex-info "Invalid filter field in waiting state"
+                       {:field field-key
+                        :path field-path
+                        :valid-fields (keys schema-fields)})))))))
+    waiting-state))
+
+===========================================================
+FILE: core/engine/flow/state.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.flow.state
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.util.state :as state]
+            [electric-starter-app.bot.impl.flows :refer [available-flows]]))
+
+(defn init!
+  "Initialize flows with schema validation."
+  []
+  (log/info "Initializing flows")
+  (state/update-state! [:flows :registry] available-flows)
+  (state/update-state! [:flows :contexts] {})
+  (log/info "Flows initialized"))
+
+===========================================================
+FILE: core/engine/flow/execution.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.flow.execution
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.core.schema.validation.context :as schema.context]
+            [electric-starter-app.bot.util.state :as state]
+            [electric-starter-app.bot.core.engine.wait.processing :as wait-state]
+            [electric-starter-app.bot.impl.flows :refer [available-flows]]
+            [electric-starter-app.bot.core.schema.validation.action :refer [validate-action-spec]]
+            [electric-starter-app.bot.impl.actions :refer [registered-actions]]
+            [electric-starter-app.bot.core.engine.action.processing :as action.processing]
+            [electric-starter-app.bot.core.engine.action.execution :as action.execution]))
+
+(defn process-action
+  "Process a single action within a flow.
+   Uses new action registry and enhanced validation system.
+   Returns updated context with action outputs and incremented step index."
+  [context action-spec]
+  (log/debug "Starting process-action"
+    {:context-id (:id context)
+     :flow-id (:flow-id context)
+     :action (:action action-spec)
+     :current-step (:current-step-index context)})
+
+  (try
+    (let [;; Initial context validation
+          validated-context (schema.context/validate-context context)
+
+          ;; Validate action specification
+          _ (log/debug "Validating action spec"
+              {:action (:action action-spec)
+               :has-inputs (boolean (:inputs action-spec))
+               :has-outputs (boolean (:outputs action-spec))})
+
+          validated-spec (validate-action-spec action-spec)
+
+          ;; Get action definition for enhanced logging
+          action-def (get registered-actions (:action validated-spec))
+
+          _ (log/debug "Processing action"
+              {:action (:action validated-spec)
+               :description (:description action-def)
+               :step-index (:current-step-index validated-context)})
+
+          ;; Resolve and validate inputs
+          resolved-inputs (action.processing/resolve-inputs (:inputs validated-spec) validated-context)
+
+          ;; Execute action with resolved inputs
+          action-result (action.execution/execute-action
+                          {:action (:action validated-spec)
+                           :inputs resolved-inputs}
+                          validated-context)]
+
+      (if (:success action-result)
+        (let [;; Map outputs to context keys
+              mapped-outputs (reduce-kv
+                               (fn [acc from-key to-key]
+                                 (if-let [value (get action-result from-key)]
+                                   (assoc acc to-key value)
+                                   acc))
+                               {}
+                               (:outputs validated-spec))
+
+              ;; Create updated context
+              updated-context (-> validated-context
+                                (update :action-outputs merge mapped-outputs)
+                                (update :current-step-index inc))
+
+              ;; Clear queue interaction if needed
+              final-context (if-let [[wait-field wait-state]
+                                     (first (filter (fn [[_ v]]
+                                                      (:queue? v))
+                                              (:waiting-state updated-context)))]
+                              (assoc-in updated-context [:waiting-state wait-field :interaction] nil)
+                              updated-context)]
+
+          (log/debug "Action processing completed successfully"
+            {:context-id (:id validated-context)
+             :flow-id (:flow-id validated-context)
+             :action (:action validated-spec)
+             :step-index (:current-step-index validated-context)
+             :mapped-outputs (keys mapped-outputs)})
+
+          ;; Validate and return updated context
+          (schema.context/validate-context final-context))
+
+        ;; Handle action failure
+        (let [error-context (assoc validated-context
+                              :error (:error action-result)
+                              :failed-step (:current-step-index validated-context)
+                              :failed-action (:action validated-spec))]
+          (log/error "Action execution failed"
+            {:context-id (:id validated-context)
+             :flow-id (:flow-id validated-context)
+             :action (:action validated-spec)
+             :step-index (:current-step-index validated-context)
+             :error (:error action-result)
+             :description (:description action-def)})
+
+          (schema.context/validate-context error-context))))
+
+    (catch Exception e
+      (log/error e "Unexpected error in process-action"
+        {:context-id (:id context)
+         :flow-id (:flow-id context)
+         :action (:action action-spec)
+         :step-index (:current-step-index context)})
+
+      (schema.context/validate-context
+        (assoc context
+          :error {:type :process-action-error
+                  :action (:action action-spec)
+                  :details (.getMessage e)
+                  :cause e}
+          :failed-step (:current-step-index context)
+          :failed-action (:action action-spec))))))
+
+(defn process-flow
+  [flow-id context-id]
+  (let [flow (get available-flows flow-id)]
+    (loop [iteration 0]
+      (when (> iteration 1000)
+        (throw (ex-info "Flow iteration limit exceeded"
+                 {:flow-id flow-id
+                  :context-id context-id
+                  :iterations iteration})))
+
+      (let [context (get-in @state/state [:flows :contexts context-id])
+            _ (when-not context
+                (throw (ex-info "Context not found"
+                         {:context-id context-id})))
+
+            current-step (get-in flow [:steps (:current-step-index context)])
+
+            _ (log/debug "Flow processing state"
+                {:context-id context-id
+                 :flow-id flow-id
+                 :iteration iteration
+                 :step-index (:current-step-index context)
+                 :step-type (cond
+                              (:wait current-step) :wait
+                              (:action current-step) :action
+                              :else nil)
+                 :has-error (:error context)
+                 :waiting-states (count (:waiting-state context))})]
+
+        (cond
+          (:error context)
+          (do
+            (log/error "Flow execution stopped due to error"
+              {:context-id context-id
+               :flow-id flow-id
+               :error (:error context)})
+            (state/update-state! [:flows :contexts context-id] nil)
+            context)
+
+          ;; Check for queued interactions to process
+          (seq (wait-state/get-queue-wait-states (:waiting-state context)))
+          (let [queue-states (wait-state/get-queue-wait-states (:waiting-state context))]
+            (if-let [[wait-field wait-state] (first (filter (fn [[_ v]]
+                                                              (seq (:queue v)))
+                                                      queue-states))]
+              (if-let [updated-context (wait-state/process-next-queued context wait-field)]
+                (do
+                  (state/update-state! [:flows :contexts context-id] updated-context)
+                  (let [next-step (get-in flow [:steps (:current-step-index updated-context)])]
+                    (if (:action next-step)
+                      ;; If next step is an action, process it immediately
+                      (let [action-result (process-action updated-context next-step)]
+                        (state/update-state! [:flows :contexts context-id] action-result)
+                        (recur (inc iteration)))
+                      ;; Otherwise continue normal flow
+                      (recur (inc iteration)))))
+                context)
+              context))
+
+          (wait-state/get-active-wait-state (:waiting-state context))
+          (do
+            (log/info "Flow paused - waiting for interaction"
+              {:context-id context-id
+               :flow-id flow-id
+               :step-index (:current-step-index context)})
+            context)
+
+          (nil? current-step)
+          (let [has-queue-wait? (boolean (seq (wait-state/get-queue-wait-states
+                                                (:waiting-state context))))]
+            (if has-queue-wait?
+              ;; If we have a queue wait state, find its step index and reset
+              (let [wait-step-index (first
+                                      (keep-indexed
+                                        (fn [idx step]
+                                          (when (:wait step) idx))
+                                        (:steps flow)))
+                    reset-context (-> context
+                                    (assoc :current-step-index wait-step-index))]
+                (state/update-state! [:flows :contexts context-id] reset-context)
+                (recur (inc iteration)))
+              ;; No queue wait state, normal completion
+              (do
+                (log/info "Flow completed successfully - purging context"
+                  {:context-id context-id
+                   :flow-id flow-id})
+                (state/update-state! [:flows :contexts context-id] nil)
+                nil)))
+
+          :else
+          (let [updated-context
+                (try
+                  (cond
+                    (:wait current-step)
+                    (wait-state/process-wait-step context (:wait current-step))
+
+                    (:action current-step)
+                    (process-action context current-step)
+
+                    :else
+                    (throw (ex-info "Invalid flow step type"
+                             {:step current-step
+                              :step-index (:current-step-index context)})))
+                  (catch Exception e
+                    (let [error-context (-> context
+                                          (assoc :error {:type :step-processing-error
+                                                         :step-type (cond
+                                                                      (:wait current-step) :wait
+                                                                      (:action current-step) :action
+                                                                      :else :unknown)
+                                                         :details (.getMessage e)
+                                                         :cause e}
+                                            :failed-step (:current-step-index context))
+                                          (schema.context/validate-context))]
+                      (log/error e "Step processing failed"
+                        {:context-id context-id
+                         :flow-id flow-id})
+                      error-context)))]
+
+            (state/update-state! [:flows :contexts context-id]
+              updated-context)
+            (recur (inc iteration))))))))
+
+===========================================================
+FILE: core/engine/flow/processing.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.flow.processing
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.platform.discord.schema.validation.interaction :as schema.interaction]
+            [electric-starter-app.bot.core.schema.validation.context :as schema.context]
+            [electric-starter-app.bot.util.state :as state]
+            [electric-starter-app.bot.impl.flows :refer [available-flows]]))
+
+(defn extract-context-data
+  [flow interaction]
+  (let [interaction-type (:interaction-type interaction)
+        trigger-data (:trigger-data interaction)]
+    (schema.interaction/validate-interaction-type interaction-type)
+    (schema.interaction/validate-interaction-fields interaction-type interaction)
+
+    ;; Merge different sources of context data
+    (merge
+      ;; Extract from interaction
+      (reduce-kv
+        (fn [ctx key schema]
+          (case (:source schema)
+            :interaction (assoc ctx key (get-in interaction (:path schema)))
+            :trigger (assoc ctx key (get-in (:trigger-data interaction) (:path schema)))
+            :bot-state (let [path (replace {:bot-name (:bot-name interaction)}
+                                    (:path schema))]
+                         (assoc ctx key (get-in @state/state path)))))
+        {}
+        (:context-schema flow))
+
+      ;; Now handle options from slash commands instead of trigger arguments
+      (when (= :slash-command (:interaction-type interaction))
+        (:options interaction)))))
+
+(defn create-flow-context
+  [flow-id interaction trigger-data]
+  (let [flow (get available-flows flow-id)
+        interaction-type (:interaction-type interaction)]
+    (schema.interaction/validate-interaction-type interaction-type)
+    (schema.interaction/validate-interaction-fields interaction-type interaction)
+
+    (let [interaction-with-trigger (assoc interaction :trigger-data trigger-data)
+          initial-context (schema.context/initialize-context
+                            {:id (random-uuid)
+                             :flow-id flow-id
+                             :current-step-index 0
+                             :interaction interaction-with-trigger})
+          context (merge initial-context
+                    (extract-context-data flow interaction-with-trigger))
+          validated-context (schema.context/validate-context context)]
+
+      (state/update-state! [:flows :contexts (:id validated-context)]
+        validated-context)
+
+      (log/debug "Created new flow context"
+        {:context-id (:id validated-context)
+         :flow-id flow-id
+         :has-trigger-data? (boolean trigger-data)})
+
+      validated-context)))
+
+===========================================================
+FILE: core/engine/interaction/processing.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.interaction.processing
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.platform.discord.schema.definition.interaction :as schema.interactions]
+            [electric-starter-app.bot.core.engine.wait.matching :as interaction-matching]
+            [electric-starter-app.bot.core.engine.flow.execution :as flow-utils]
+            [electric-starter-app.bot.core.engine.flow.processing :as flow-utils2]
+            [electric-starter-app.bot.core.engine.wait.processing :as wait-state]
+            [electric-starter-app.bot.platform.discord.schema.validation.trigger :as trigger-utils]
+            [electric-starter-app.bot.util.state :as state]
+            [electric-starter-app.bot.platform.discord.tracking.guild :as guild-tracking]
+            [electric-starter-app.bot.impl.flows :refer [available-flows]]))
+
+(defn transform-event
+  "Transform JDA events into normalized interaction maps using schema definitions.
+   Returns nil for unhandled event types."
+  [event bot-name]
+  (when-let [schema (schema.interactions/get-schema-for-event event)]
+    (log/debug "Found schema for event type:" (-> event .getClass .getSimpleName))
+    (try
+      (reduce-kv
+        (fn [acc field-name {:keys [value required transform]}]
+          (let [field-value (cond
+                              value value
+                              (= :bot-name field-name) bot-name
+                              transform (transform event)
+                              :else nil)]
+            (if (and required (nil? field-value))
+              (throw (ex-info "Required field missing"
+                       {:field field-name
+                        :event-type (-> event .getClass .getSimpleName)}))
+              (assoc acc field-name field-value))))
+        {}
+        (:fields schema))
+      (catch Exception e
+        (log/error e "Failed to transform event"
+          {:event-type (-> event .getClass .getSimpleName)
+           :bot-name bot-name})
+        nil))))
+
+(defn process-interaction [interaction]
+  (log/debug "Processing interaction"
+    {:type (:interaction-type interaction)
+     :guild-id (:guild-id interaction)
+     :channel-id (:channel-id interaction)})
+
+  (try
+    ;; Handle guild updates - directly call the function, no require/resolve needed
+    (guild-tracking/guild-update interaction)
+
+    ;; Process waiting contexts
+    (let [waiting-contexts (interaction-matching/find-waiting-contexts interaction)]
+      (log/debug "Found waiting contexts"
+        {:count (count waiting-contexts)})
+
+      (doseq [[context-id context wait-field] waiting-contexts]
+        (log/debug "Checking wait state"
+          {:context-id context-id
+           :wait-field wait-field
+           :flow-id (:flow-id context)
+           :is-queue? (get-in context [:waiting-state wait-field :queue?])})
+
+        (try
+          (let [wait-state (get-in context [:waiting-state wait-field])]
+            (if (:queue? wait-state)
+              ;; Handle queue wait state
+              (let [updated-context (-> context
+                                      (update-in [:waiting-state wait-field]
+                                        wait-state/queue-interaction
+                                        interaction))]
+                (state/update-state! [:flows :contexts context-id] updated-context)
+                (flow-utils/process-flow (:flow-id context) context-id))
+              ;; Handle regular wait state
+              (let [updated-context (wait-state/complete-wait-state context wait-field interaction)]
+                (state/update-state! [:flows :contexts context-id] updated-context)
+                (flow-utils/process-flow (:flow-id context) context-id))))
+          (catch Exception e
+            (log/error e "Failed to process waiting context"
+              {:context-id context-id
+               :flow-id (:flow-id context)})))))
+
+    ;; Check for new flow triggers
+    (when-let [[flow-id trigger-data] (trigger-utils/matches-trigger? interaction)]
+      (log/debug "Found matching flow trigger"
+        {:flow-id flow-id
+         :trigger-data trigger-data})
+
+      (when-let [flow (get available-flows flow-id)]
+        (try
+          (let [context (flow-utils2/create-flow-context
+                          flow-id
+                          interaction
+                          trigger-data)]
+            (log/debug "Created new flow context"
+              {:flow-id flow-id
+               :context-id (:id context)})
+            (flow-utils/process-flow flow-id (:id context)))
+          (catch Exception e
+            (log/error e "Failed to start new flow"
+              {:flow-id flow-id
+               :trigger-data trigger-data})))))
+
+    (catch Exception e
+      (log/error e "Unexpected error processing interaction"
+        {:interaction-type (:interaction-type interaction)}))))
+
+===========================================================
+FILE: core/engine/action/execution.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.action.execution
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.core.schema.validation.context :as schema.context]
+            [electric-starter-app.bot.core.schema.validation.action :refer [validate-action-inputs validate-action-outputs]]
+            [electric-starter-app.bot.impl.actions :refer [registered-actions]]))
+
+(defn is-acceptable-error?
+  "Determines if an error should allow flow continuation"
+  [action-def error-result]
+  (when (and (:acceptable-errors action-def)
+          (:error error-result))
+    (contains? (:acceptable-errors action-def)
+      (get-in error-result [:error :type]))))
+
+(defn execute-action
+  "Executes an action with validated inputs and returns its outputs.
+   Now handles acceptable errors that shouldn't halt flow execution."
+  [{:keys [action inputs]} ctx]
+  (try
+    (when-not (contains? registered-actions action)
+      (throw (ex-info "Unknown action type"
+               {:action action
+                :available-actions (keys registered-actions)})))
+
+    (let [action-def (get registered-actions action)
+          handler (:handler action-def)
+          validated-ctx (schema.context/validate-context ctx)]
+
+      (log/debug "Execute action called"
+        {:action action
+         :action-name (:name action-def)
+         :description (:description action-def)
+         :inputs (keys inputs)})
+
+      (let [validated-inputs (validate-action-inputs action inputs)
+            _ (log/debug "Executing action with validated inputs"
+                {:action action
+                 :validated-inputs (keys validated-inputs)})
+
+            raw-result (try
+                         (handler validated-inputs validated-ctx)
+                         (catch Exception e
+                           (log/error e "Handler execution failed"
+                             {:action action
+                              :inputs validated-inputs})
+                           (throw (ex-info "Action handler failed"
+                                    {:action action
+                                     :type :handler-execution-error
+                                     :cause e}))))
+
+            _ (log/debug "Handler returned result"
+                {:action action
+                 :result-keys (keys raw-result)})
+
+            _ (when-not (map? raw-result)
+                (throw (ex-info "Handler must return a map"
+                         {:action action
+                          :result raw-result
+                          :result-type (type raw-result)})))
+
+            _ (when-not (contains? raw-result :success)
+                (throw (ex-info "Handler result must contain :success key"
+                         {:action action
+                          :result raw-result})))
+
+            validated-outputs (validate-action-outputs action raw-result)]
+
+        (log/debug "Action execution completed"
+          {:action action
+           :success (:success validated-outputs)
+           :has-error (contains? validated-outputs :error)
+           :error-type (get-in validated-outputs [:error :type])
+           :output-keys (keys validated-outputs)})
+
+        ;; Key change: If the error is acceptable, we treat it as a "successful failure"
+        (if (and (not (:success validated-outputs))
+              (is-acceptable-error? action-def validated-outputs))
+          (do
+            (log/info "Action completed with acceptable error"
+              {:action action
+               :error-type (get-in validated-outputs [:error :type])})
+            ;; Return the outputs but mark as successful for flow continuation
+            (assoc validated-outputs :success true))
+          validated-outputs)))
+
+    (catch Exception e
+      (let [error-data {:action action
+                        :error-type (or (-> e ex-data :type) :action-execution-error)
+                        :details (.getMessage e)
+                        :cause e}]
+        (log/error e "Failed to execute action" error-data)
+        {:success false
+         :error error-data}))))
+
+===========================================================
+FILE: core/engine/action/processing.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.action.processing
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.core.schema.validation.expression :as schema.expressions]))
+
+(defn resolve-inputs
+  "Resolves action inputs using expression evaluation.
+   Enhanced with type validation and expression verification."
+  [input-specs ctx]
+  (log/debug "Starting input resolution"
+    {:input-specs (keys input-specs)
+     :ctx-keys (keys ctx)})
+
+  (try
+    (let [resolved (reduce-kv
+                     (fn [inputs key spec]
+                       (try
+                         (let [resolved-value (schema.expressions/evaluate-expression spec ctx)]
+                           (log/debug "Resolved input"
+                             {:key key
+                              :value-type (type resolved-value)
+                              :has-value (boolean resolved-value)})
+                           (if (nil? resolved-value)
+                             (do
+                               (log/warn "Input resolved to nil"
+                                 {:key key
+                                  :spec spec})
+                               inputs)
+                             (assoc inputs key resolved-value)))
+                         (catch Exception e
+                           (throw (ex-info "Failed to resolve input"
+                                    {:input-key key
+                                     :spec spec
+                                     :error (.getMessage e)}
+                                    e)))))
+                     {}
+                     input-specs)]
+
+      (log/debug "Completed input resolution"
+        {:input-count (count input-specs)
+         :resolved-count (count resolved)
+         :resolved-keys (keys resolved)})
+
+      resolved)
+
+    (catch Exception e
+      (log/error e "Input resolution failed")
+      (throw (ex-info "Input resolution failed"
+               {:input-specs (keys input-specs)
+                :error (.getMessage e)}
+               e)))))
+
+===========================================================
+FILE: core/engine/wait/processing.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.wait.processing
+  (:require [clojure.tools.logging :as log]
+            [electric-starter-app.bot.core.schema.validation.wait-state :refer [validate-wait-step]]
+            [electric-starter-app.bot.core.schema.validation.context :as schema.context]
+            [electric-starter-app.bot.core.schema.validation.expression :as expressions]
+            [electric-starter-app.bot.core.schema.definition.wait-state :as wait-state]
+            [electric-starter-app.bot.impl.flows :refer [available-flows]]))
+
+(defn resolve-wait-step-expressions
+  "Resolves any expressions in the wait step filters using the context."
+  [{:keys [input-filters output-filters] :as wait-step} ctx]
+  (cond-> wait-step
+    input-filters
+    (update :input-filters #(expressions/evaluate-expression % ctx))
+
+    output-filters
+    (update :output-filters
+      (fn [filters]
+        (mapv #(update % :conditions
+                 (fn [conditions]
+                   (expressions/evaluate-expression conditions ctx)))
+          filters)))))
+
+(defn get-active-wait-state
+  "Retrieves the currently active waiting state if one exists.
+   Returns [wait-id wait-state] or nil if no active wait state exists."
+  [waiting-states]
+  (log/debug "Checking for active wait states"
+    {:all-states waiting-states})
+  (let [active (first (filter (fn [[id v]]
+                                (let [is-active (and (nil? (:interaction v))
+                                                  (not (:completed v))
+                                                  (not (:queue? v))) ; Ignore queue states
+                                      _ (log/debug "Evaluating wait state"
+                                          {:id id
+                                           :state v
+                                           :has-interaction (boolean (:interaction v))
+                                           :is-completed (boolean (:completed v))
+                                           :is-queue (boolean (:queue? v))
+                                           :is-active is-active})]
+                                  is-active))
+                        waiting-states))]
+    (log/debug "Active wait state check result"
+      {:found-active (boolean active)
+       :active-id (first active)})
+    active))
+
+(defn process-wait-step
+  "Processes a wait step in a flow, creating and storing the wait state."
+  [context wait-step]
+  (log/debug "Beginning wait step processing"
+    {:context-id (:id context)
+     :current-step (:current-step-index context)
+     :wait-step wait-step})
+
+  (let [validated-step (validate-wait-step wait-step)
+        resolved-step (resolve-wait-step-expressions validated-step context)
+        is-queue? (get resolved-step :queue? false)]
+
+    (log/debug "Resolved wait step"
+      {:original wait-step
+       :resolved resolved-step
+       :is-queue is-queue?})
+
+    ;; Only check for active wait states if this is not a queue wait
+    (when-let [active-wait (and (not is-queue?)
+                             (get-active-wait-state (:waiting-state context)))]
+      (throw (ex-info "Cannot create new wait state while another is active"
+               {:new-wait (:store-as resolved-step)
+                :active-wait (first active-wait)})))
+
+    (let [wait-state (wait-state/create-wait-state
+                       (:interaction-type resolved-step)
+                       :input-filters (:input-filters resolved-step)
+                       :output-filters (:output-filters resolved-step)
+                       :queue? is-queue?)]
+
+      (log/debug "Created new wait state"
+        {:wait-field (:store-as resolved-step)
+         :new-state wait-state
+         :is-queue is-queue?})
+
+      (-> context
+        (assoc-in [:waiting-state (:store-as resolved-step)] wait-state)
+        schema.context/validate-context))))
+
+(defn matches-nested-value?
+  [expected actual]
+  (log/debug "Comparing nested values"
+    {:expected expected
+     :actual actual
+     :expected-type (type expected)
+     :actual-type (type actual)})
+  (cond
+    ;; Handle expression maps - extract actual value
+    (and (map? actual)
+      (:type actual)
+      (= :value (:type actual)))
+    (matches-nested-value? expected (:value actual))
+
+    (map? expected)
+    (do
+      (log/debug "Comparing maps"
+        {:expected-keys (keys expected)
+         :actual-keys (if (map? actual) (keys actual) "not-a-map")})
+      (every? (fn [[k v]]
+                (when-let [actual-v (get actual k)]
+                  (matches-nested-value? v actual-v)))
+        expected))
+
+    (vector? expected)
+    (and (vector? actual)
+      (= (count expected) (count actual))
+      (every? true? (map matches-nested-value? expected actual)))
+
+    (set? expected)
+    (and (set? actual)
+      (= (count expected) (count actual))
+      (every? #(some (fn [actual-val] (matches-nested-value? % actual-val)) actual) expected))
+
+    (coll? expected)
+    (and (coll? actual)
+      (= (count expected) (count actual))
+      (every? true? (map matches-nested-value? expected actual)))
+
+    :else
+    (do
+      (log/debug "Comparing values directly"
+        {:expected expected
+         :actual actual
+         :equal? (= expected actual)})
+      (= expected actual))))
+
+(defn resolve-filter-value
+  "Resolves filter values, handling both expressions and nested structures"
+  [value context]
+  (cond
+    ;; Handle explicit expressions (including path expressions)
+    (and (map? value) (:type value))
+    (expressions/evaluate-expression value context)
+
+    ;; Handle nested maps
+    (map? value)
+    (reduce-kv
+      (fn [acc k v]
+        (assoc acc k (resolve-filter-value v context)))
+      {}
+      value)
+
+    ;; Handle sequences
+    (sequential? value)
+    (mapv #(resolve-filter-value % context) value)
+
+    ;; Return primitive values as-is
+    :else value))
+
+
+
+(defn process-next-queued
+  "Process the next queued interaction for a wait state if available.
+   Returns updated context with next interaction processed, or nil if queue empty."
+  [context wait-field]
+  (let [wait-state (get-in context [:waiting-state wait-field])
+        next-interaction (first (:queue wait-state))
+        current-step-index (or (:current-step-index context) 0)
+        wait-step-index (or (first
+                              (keep-indexed
+                                (fn [idx step]
+                                  (when (and (:wait step)
+                                          (= (get-in step [:wait :store-as]) wait-field))
+                                    idx))
+                                (:steps (get available-flows (:flow-id context)))))
+                          0)]
+    (when next-interaction
+      (log/debug "Processing next queued interaction"
+        {:context-id (:id context)
+         :wait-field wait-field
+         :queue-size (count (:queue wait-state))})
+      (let [updated-context (-> context
+                              (update-in [:waiting-state wait-field :queue] subvec 1)
+                              (assoc-in [:waiting-state wait-field :interaction] next-interaction)
+                              (assoc :current-step-index (inc wait-step-index)))]
+        ;; Process the step after wait state (usually an action)
+        (if (:action (get-in (get available-flows (:flow-id context))
+                       [:steps (inc wait-step-index)]))
+          ;; If there's an action step, schedule the interaction clearance after it
+          (update-in updated-context [:waiting-state wait-field] assoc
+            :clear-after-action true)
+          ;; If no action step, clear interaction immediately
+          (assoc-in updated-context [:waiting-state wait-field :interaction] nil))))))
+
+(defn queue-interaction
+  "Adds an interaction to a wait state's queue"
+  [wait-state interaction]
+  (log/debug "Queueing interaction in wait state"
+    {:interaction-type (:interaction-type wait-state)
+     :queue-size (count (:queue wait-state))})
+  (update wait-state :queue (fnil conj []) interaction))
+
+(defn get-queue-wait-states
+  "Retrieves all queue-enabled wait states.
+   Returns sequence of [wait-id wait-state] pairs."
+  [waiting-states]
+  (log/debug "Finding queue wait states")
+  (let [queue-states (filter (fn [[_ v]] (:queue? v)) waiting-states)]
+    (log/debug "Found queue wait states"
+      {:count (count queue-states)
+       :ids (map first queue-states)})
+    queue-states))
+
+
+
+(defn evaluate-output-filter
+  "Evaluates a single output filter against interaction and context"
+  [{:keys [conditions]} interaction context]
+  (every? (fn [[field expected-value]]
+            (let [resolved-expected (resolve-filter-value expected-value context)
+                  actual-value (if (vector? field)
+                                 (get-in interaction field)
+                                 (get-in interaction [field]))
+                  matches? (matches-nested-value? resolved-expected actual-value)]
+              (log/debug "Checking output filter condition"
+                {:field field
+                 :expected expected-value
+                 :resolved-expected resolved-expected
+                 :actual actual-value
+                 :matches? matches?})
+              matches?))
+    conditions))
+
+(defn evaluate-output-filters
+  "Evaluates output filters against an interaction and context.
+   Returns the target step index of the first matching filter, or nil if none match."
+  [output-filters interaction context]
+  (log/debug "Evaluating output filters"
+    {:filter-count (count output-filters)})
+  (when (seq output-filters)
+    (->> output-filters
+      (filter #(evaluate-output-filter % interaction context))
+      first
+      :target-step)))
+
+(defn complete-wait-state
+  "Complete a wait state and advance the flow to the appropriate next step"
+  [context wait-field interaction]
+  (log/debug "Starting wait state completion"
+    {:context-id (:id context)
+     :wait-field wait-field
+     :current-step (:current-step-index context)
+     :waiting-states (:waiting-state context)})
+
+  (let [wait-state (get-in context [:waiting-state wait-field])
+        output-filters (:output-filters wait-state)
+        target-step (when output-filters
+                      (evaluate-output-filters
+                        output-filters
+                        interaction
+                        context))
+        next-step (or target-step (inc (:current-step-index context)))
+        updated-context (-> context
+                          (assoc-in [:waiting-state wait-field :interaction] interaction)
+                          (assoc-in [:waiting-state wait-field :completed] true)
+                          (assoc :current-step-index next-step))]
+
+    (log/debug "Completed wait state"
+      {:context-id (:id context)
+       :wait-field wait-field
+       :had-output-filters? (boolean output-filters)
+       :target-step target-step
+       :next-step next-step
+       :updated-waiting-states (:waiting-state updated-context)})
+
+    (schema.context/validate-context updated-context)))
+
+===========================================================
+FILE: core/engine/wait/matching.clj
+===========================================================
+
+(ns electric-starter-app.bot.core.engine.wait.matching
+  (:require [clojure.tools.logging :as log]
+            [clojure.string :as str]
+            [electric-starter-app.bot.platform.discord.schema.definition.interaction :as schema.interactions]
+            [electric-starter-app.bot.core.schema.validation.context :as schema.context]
+            [electric-starter-app.bot.util.state :as state]
+            [electric-starter-app.bot.core.schema.validation.expression :as expressions]))
+
+(def supported-interaction-types
+  (set (keys schema.interactions/interaction-schemas)))
+
+(defn matches-nested-value? [expected actual]
+  (log/debug "Comparing nested values"
+    {:expected expected
+     :actual actual
+     :expected-type (type expected)
+     :actual-type (type actual)})
+  (cond
+    ;; Handle expression maps - extract actual value
+    (and (map? actual)
+      (:type actual)
+      (= :value (:type actual)))
+    (matches-nested-value? expected (:value actual))
+
+    (map? expected)
+    (do
+      (log/debug "Comparing maps"
+        {:expected-keys (keys expected)
+         :actual-keys (if (map? actual) (keys actual) "not-a-map")})
+      (every? (fn [[k v]]
+                (when-let [actual-v (get actual k)]
+                  (matches-nested-value? v actual-v)))
+        expected))
+
+    (vector? expected)
+    (and (vector? actual)
+      (= (count expected) (count actual))
+      (every? true? (map matches-nested-value? expected actual)))
+
+    (set? expected)
+    (and (set? actual)
+      (= (count expected) (count actual))
+      (every? #(some (fn [actual-val] (matches-nested-value? % actual-val)) actual) expected))
+
+    (coll? expected)
+    (and (coll? actual)
+      (= (count expected) (count actual))
+      (every? true? (map matches-nested-value? expected actual)))
+
+    :else
+    (do
+      (log/debug "Comparing values directly"
+        {:expected expected
+         :actual actual
+         :equal? (= expected actual)})
+      (= expected actual))))
+
+(defn resolve-filter-value
+  "Resolves filter values, handling both expressions and nested structures"
+  [value context]
+  (cond
+    ;; Handle explicit expressions (including path expressions)
+    (and (map? value) (:type value))
+    (expressions/evaluate-expression value context)
+
+    ;; Handle nested maps
+    (map? value)
+    (reduce-kv
+      (fn [acc k v]
+        (assoc acc k (resolve-filter-value v context)))
+      {}
+      value)
+
+    ;; Handle sequences
+    (sequential? value)
+    (mapv #(resolve-filter-value % context) value)
+
+    ;; Return primitive values as-is
+    :else value))
+
+(defn matches-filters?
+  "Check if interaction matches the input filters given context"
+  [input-filters interaction context]
+  (when input-filters  ; Guard against nil filters
+    (try
+      (every? (fn [[field expected-value]]
+                (let [resolved-expected (resolve-filter-value expected-value context)
+                      actual-value (get-in interaction
+                                     (if (vector? field)
+                                       field
+                                       [field]))
+                      matches? (matches-nested-value? resolved-expected actual-value)]
+                  (log/debug "Checking input filter match"
+                    {:field field
+                     :expected expected-value
+                     :resolved-expected resolved-expected
+                     :actual actual-value
+                     :matches? matches?})
+                  matches?))
+        input-filters)
+      (catch Exception e
+        (log/error e "Error evaluating filters"
+          {:filters input-filters
+           :interaction-type (:interaction-type interaction)})
+        false))))
+
+(defn find-waiting-contexts
+  "Find all contexts with a matching waiting state for the given interaction.
+   Enhanced with better validation and error handling."
+  [interaction]
+  (log/debug "Searching for waiting contexts"
+    {:interaction-type (:interaction-type interaction)
+     :message-id (get interaction :message-id)})
+
+  (try
+    (when-not (:interaction-type interaction)
+      (throw (ex-info "Invalid interaction: missing type"
+               {:interaction interaction})))
+
+    (when-not (supported-interaction-types (:interaction-type interaction))
+      (log/warn "Unsupported interaction type"
+        {:type (:interaction-type interaction)
+         :supported supported-interaction-types})
+      [])
+
+    (let [contexts (get-in @state/state [:flows :contexts])
+          _ (log/debug "Examining contexts"
+              {:total-contexts (count contexts)})
+
+          matching-contexts
+          (for [[context-id context] contexts
+                :let [_ (log/debug "Examining context for matches"
+                          {:context-id context-id
+                           :waiting-state-keys (keys (:waiting-state context))
+                           :has-waiting? (seq (:waiting-state context))
+                           :current-step (:current-step-index context)})
+                      validated-context (try
+                                          (when context  ; Only validate if context exists
+                                            (schema.context/validate-context context))
+                                          (catch Exception e
+                                            (log/error e "Invalid context found"
+                                              {:context-id context-id})
+                                            nil))]
+                :when (and validated-context
+                        (seq (:waiting-state validated-context)))
+                [wait-name wait-state] (:waiting-state validated-context)
+                :let [_ (log/debug "Checking wait state"
+                          {:context-id context-id
+                           :wait-name wait-name
+                           :wait-state-type (:interaction-type wait-state)
+                           :has-interaction? (boolean (:interaction wait-state))
+                           :has-filters? (boolean (:input-filters wait-state))})]
+                :when (try
+                        (and (keyword? wait-name)
+                          (map? wait-state)
+                          (nil? (:interaction wait-state))
+                          (= (:interaction-type wait-state)
+                            (:interaction-type interaction))
+                          (matches-filters?
+                            (:input-filters wait-state)
+                            interaction
+                            validated-context))
+                        (catch Exception e
+                          (log/error e "Error matching wait state"
+                            {:context-id context-id
+                             :wait-name wait-name})
+                          false))]
+            [context-id validated-context wait-name])]
+
+      (log/debug "Found waiting contexts"
+        {:examined (count contexts)
+         :matched (count matching-contexts)
+         :matches (mapv (fn [[id _ _]] id) matching-contexts)})
+
+      matching-contexts)
+
+    (catch Exception e
+      (log/error e "Failed to find waiting contexts"
+        {:interaction-type (:interaction-type interaction)})
+      [])))
+
+(defn evaluate-output-filter
+  "Evaluates a single output filter against interaction and context"
+  [{:keys [conditions]} interaction context]
+  (every? (fn [[field expected-value]]
+            (let [resolved-expected (resolve-filter-value expected-value context)
+                  actual-value (if (vector? field)
+                                 (get-in interaction field)
+                                 (get-in interaction (if (string? field)
+                                                       (str/split field #"\.")
+                                                       [field])))
+                  matches? (matches-nested-value? resolved-expected actual-value)]
+              (log/debug "Checking output filter condition"
+                {:field field
+                 :expected expected-value
+                 :resolved-expected resolved-expected
+                 :actual actual-value
+                 :matches? matches?})
+              matches?))
+    conditions))
+
+(defn evaluate-output-filters
+  "Evaluates output filters against an interaction and context.
+   Returns the target step index of the first matching filter, or nil if none match."
+  [output-filters interaction context]
+  (log/debug "Evaluating output filters"
+    {:filter-count (count output-filters)})
+  (when (seq output-filters)
+    (->> output-filters
+      (filter #(evaluate-output-filter % interaction context))
+      first
+      :target-step)))
+
+===========================================================
+FILE: storage/database.clj
+===========================================================
+
+(ns electric-starter-app.bot.storage.database
+  (:require [next.jdbc :as jdbc]
+            [next.jdbc.sql :as sql]
+            [clojure.tools.logging :as log]))
+
+(def db-spec
+  {:dbtype "sqlite"
+   :dbname "discord_bot.db"})
+
+(defonce datasource (atom nil))
+
+(defn init-db!
+  "Initialize database connection and create necessary tables"
+  []
+  (log/info "Initializing database connection")
+  (try
+    (let [ds (jdbc/get-datasource db-spec)]
+      (reset! datasource ds)
+
+      ;; Members table - stores Discord user IDs
+      (jdbc/execute! ds ["CREATE TABLE IF NOT EXISTS members (
+                         discord_id TEXT PRIMARY KEY)"])
+
+      ;; Questions table - stores questions
+      (jdbc/execute! ds ["CREATE TABLE IF NOT EXISTS questions (
+                         question_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         question_text TEXT NOT NULL)"])
+
+      ;; QuestionResponses table - stores responses to questions
+      (jdbc/execute! ds ["CREATE TABLE IF NOT EXISTS question_responses (
+                         response_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         question_id INTEGER NOT NULL,
+                         discord_id TEXT NOT NULL,
+                         response_text TEXT NOT NULL,
+                         FOREIGN KEY (question_id) REFERENCES questions(question_id),
+                         FOREIGN KEY (discord_id) REFERENCES members(discord_id))"])
+
+      ;; Discussions table - stores discussion threads about responses
+      (jdbc/execute! ds ["CREATE TABLE IF NOT EXISTS discussions (
+                         message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         response_id INTEGER NOT NULL,
+                         parent_id INTEGER NOT NULL DEFAULT 0,
+                         discord_id TEXT NOT NULL,
+                         content TEXT NOT NULL,
+                         FOREIGN KEY (response_id) REFERENCES question_responses(response_id),
+                         FOREIGN KEY (discord_id) REFERENCES members(discord_id))"])
+
+      ;; Achievements table - stores user achievements
+      (jdbc/execute! ds ["CREATE TABLE IF NOT EXISTS achievements (
+                         discord_id TEXT NOT NULL,
+                         achievement_name TEXT NOT NULL,
+                         PRIMARY KEY (discord_id, achievement_name),
+                         FOREIGN KEY (discord_id) REFERENCES members(discord_id))"])
+
+      (log/info "Database initialized successfully")
+      true)
+    (catch Exception e
+      (log/error e "Failed to initialize database")
+      (throw (ex-info "Database initialization failed"
+               {:error (.getMessage e)})))))
+
+(defn profile-exists?
+  "Check if a member profile exists"
+  [member-id]
+  (when @datasource
+    (try
+      (let [result (sql/query @datasource
+                     ["SELECT discord_id FROM members WHERE discord_id = ?" member-id])]
+        (boolean (seq result)))
+      (catch Exception e
+        (log/error e "Error checking profile existence" {:member-id member-id})
+        (throw (ex-info "Failed to check profile existence"
+                 {:member-id member-id
+                  :error (.getMessage e)}))))))
+
+(defn create-profile!
+  "Create a new member profile"
+  [member-id]
+  (when @datasource
+    (try
+      (if (profile-exists? member-id)
+        {:success false
+         :error {:type :profile-exists
+                 :message "Profile already exists"}}
+        (do
+          (sql/insert! @datasource :members {:discord_id member-id})
+          {:success true}))
+      (catch Exception e
+        (log/error e "Error creating profile" {:member-id member-id})
+        {:success false
+         :error {:type :database-error
+                 :message (.getMessage e)}}))))
+
+===========================================================
+End of combined files
+Total files: 30
+Total size: 124K
+==========================================================
